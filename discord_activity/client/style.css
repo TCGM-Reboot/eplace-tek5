@@ -1,0 +1,29 @@
+:root { color-scheme: dark; }
+body { margin: 0; font-family: ui-sans-serif, system-ui, Segoe UI, Roboto, Helvetica, Arial; background: #0b0f1e; color: #e9ecff; }
+button { font: inherit; }
+.shell { padding: 16px; max-width: 1200px; margin: 0 auto; }
+.topbar { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; border-radius: 16px; background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.10); margin-bottom: 14px; }
+.brand { display: flex; align-items: center; gap: 10px; }
+.badge { width: 30px; height: 30px; border-radius: 10px; background: linear-gradient(135deg, rgba(124,92,255,1), rgba(0,229,255,1)); box-shadow: 0 12px 44px rgba(124,92,255,0.18); }
+.brandTitle { font-weight: 900; letter-spacing: .2px; }
+.mainRow { display: flex; gap: 12px; align-items: flex-start; }
+.leftPanel { width: 260px; display: flex; flex-direction: column; gap: 10px; padding: 12px; border-radius: 16px; background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.10); }
+.canvasWrap { flex: 1; display: flex; justify-content: center; }
+canvas { background: #222; border-radius: 14px; }
+.mini { font-size: 12px; opacity: .85; line-height: 1.35; }
+.sep { height: 1px; background: rgba(255,255,255,.10); margin: 6px 0; }
+.row { display: flex; gap: 8px; }
+.status { font-size: 12px; opacity: .9; white-space: pre-wrap; }
+.palWrap { display: grid; grid-template-columns: repeat(8, 22px); gap: 6px; }
+.palBtn { width: 22px; height: 22px; border-radius: 7px; cursor: pointer; }
+.btn { padding: 8px 10px; border-radius: 12px; border: 1px solid rgba(255,255,255,.14); background: rgba(255,255,255,.08); color: inherit; cursor: pointer; }
+.btn:hover { background: rgba(255,255,255,.12); }
+.userSlot { display: flex; align-items: center; gap: 10px; }
+.userCard { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 14px; background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.10); }
+.userAvatar { width: 34px; height: 34px; border-radius: 12px; object-fit: cover; }
+.userText { display: flex; flex-direction: column; line-height: 1.05; }
+.userName { font-weight: 900; font-size: 13px; }
+.userId { font-size: 11px; opacity: .75; }
+.fatal { padding: 16px; border-radius: 16px; background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.10); }
+.fatalTitle { font-size: 16px; font-weight: 900; margin-bottom: 10px; }
+.fatalPre { white-space: pre-wrap; background: rgba(0,0,0,0.35); padding: 12px; border-radius: 12px; overflow: auto; margin: 0; }
