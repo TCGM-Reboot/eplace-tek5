@@ -1,26 +1,23 @@
-# ---- Build stage ----
+# ---- build stage ----
 FROM node:20-alpine AS build
 WORKDIR /app
 
-# Installer les deps d'abord (meilleur cache)
-COPY package*.json ./
-# Si tu utilises pnpm ou yarn, adapte les commandes ci-dessous.
-RUN npm ci
+# Copier les manifests du client (IMPORTANT)
+COPY client/package.json client/package-lock.json ./client/
+RUN cd client && npm ci
 
-# Copier le reste et build
-COPY . .
-RUN npm run build
+# Copier le reste du client et build
+COPY client ./client
+RUN cd client && npm run build
 
-# ---- Runtime stage (serve static) ----
-# Nginx non-root, adapté Cloud Run
+# ---- runtime stage (serve static) ----
 FROM nginxinc/nginx-unprivileged:stable-alpine AS runtime
 
-# Nginx écoute en 8080 (Cloud Run)
+# Nginx écoute sur 8080 (Cloud Run)
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 
-# Copier le build Vite (dist) vers le dossier statique Nginx
-COPY --from=build /app/dist /usr/share/nginx/html
+# Copier le build Vite (dist)
+COPY --from=build /app/client/dist /usr/share/nginx/html
 
-# Optionnel: petit hardening
-# (image unprivileged => déjà non-root)
 EXPOSE 8080
+CMD ["nginx", "-g", "daemon off;"]
