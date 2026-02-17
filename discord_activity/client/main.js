@@ -327,7 +327,7 @@ async function pingBackend(inDiscord) {
   const reqId = makeReqId()
   const user = await getUserForPayload(inDiscord)
 
-  const res = await fetch(`${GATEWAY_BASE}/proxy`, {
+  const res = await fetch(`https://1224715390362324992.discordsays.com`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
