@@ -73,6 +73,8 @@ function b64urlToUtf8(str) {
   return new TextDecoder().decode(bytes)
 }
 async function pingBackend() {
+  console.log("window.location.href:", window.location.href);
+  console.log("window.location.origin:", window.location.origin);
   const res = await fetch("https://serverless-mvp-gw-dev-5gidoaix.ew.gateway.dev/proxy", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
