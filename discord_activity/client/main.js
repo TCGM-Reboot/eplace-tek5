@@ -3,7 +3,7 @@ import { DiscordSDK } from "@discord/embedded-app-sdk"
 
 console.log("MAIN.JS VERSION = BOARD_V1", new Date().toISOString())
 
-const GATEWAY_BASE = "https://serverless-mvp-gw-dev-5gidoaix.ew.gateway.dev"
+const GATEWAY_BASE = "https://1224715390362324992.discordsays.com/gcp"
 
 function escapeHtml(s) {
   return String(s)
@@ -327,7 +327,7 @@ async function pingBackend(inDiscord) {
   const reqId = makeReqId()
   const user = await getUserForPayload(inDiscord)
 
-  const res = await fetch(`https://1224715390362324992.discordsays.com/gcp/proxy`, {
+  const res = await fetch(`${GATEWAY_BASE}/proxy`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
