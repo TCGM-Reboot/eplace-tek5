@@ -89,6 +89,23 @@ async function pingBackend() {
   return data;
 }
 
+async function pingBackendFromDiscord() {
+  console.log("window.location.href:", window.location.href);
+  console.log("window.location.origin:", window.location.origin);
+  const res = await fetch("https://1224715390362324992.discordsays.com/proxy", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      type: "PING",
+      payload: { from: "activity", at: new Date().toISOString() }
+    })
+  });
+
+  const data = await res.json();
+  console.log("Backend response:", data);
+  return data;
+}
+
 function readWebUserFromUrl() {
   try {
     const u = new URL(location.href)
@@ -362,6 +379,7 @@ async function run() {
             <button class="btn" id="reload">Reload board</button>
             <button class="btn" id="clear">Clear local</button>
             <button class="btn" id="ping-btn" type="button">Ping Backend</button>
+            <button class="btn" id="ping-btn2" type="button">Ping from Discord</button>
             <pre id="ping-output" style="white-space: pre-wrap;"></pre>
           </div>
           <div class="row">
@@ -390,6 +408,7 @@ async function run() {
 
   // --- UI wiring ---
 const btn = document.getElementById("ping-btn");
+const btn2 = document.getElementById("ping-btn2");
 const out = document.getElementById("ping-output");
 
 if (btn && out) {
@@ -407,6 +426,24 @@ if (btn && out) {
     } finally {
       btn.disabled = false;
       btn.textContent = "Ping Backend";
+    }
+  });
+
+  if (btn2 && out) {
+  btn2.addEventListener("click", async () => {
+    btn2.disabled = true;
+    btn2.textContent = "Ping...";
+    out.textContent = "";
+
+    try {
+      const data = await pingBackendFromDiscord();
+      out.textContent = JSON.stringify(data, null, 2);
+    } catch (err) {
+      console.error(err);
+      out.textContent = `Erreur: ${err?.message ?? String(err)}`;
+    } finally {
+      btn2.disabled = false;
+      btn2.textContent = "Ping Backend";
     }
   });
 }
