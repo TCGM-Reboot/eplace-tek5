@@ -1,6 +1,6 @@
 import "./style.css"
 import { DiscordSDK } from "@discord/embedded-app-sdk"
-
+console.log("MAIN.JS VERSION = PING_BTN_V1", new Date().toISOString());
 function escapeHtml(s) {
   return String(s)
     .replaceAll("&", "&amp;")
@@ -71,6 +71,20 @@ function b64urlToUtf8(str) {
   const bytes = new Uint8Array(bin.length)
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
   return new TextDecoder().decode(bytes)
+}
+async function pingBackend() {
+  const res = await fetch("https://serverless-mvp-gw-dev-5gidoaix.ew.gateway.dev/proxy", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      type: "PING",
+      payload: { from: "activity", at: new Date().toISOString() }
+    })
+  });
+
+  const data = await res.json();
+  console.log("Backend response:", data);
+  return data;
 }
 
 function readWebUserFromUrl() {
@@ -345,6 +359,8 @@ async function run() {
           <div class="row">
             <button class="btn" id="reload">Reload board</button>
             <button class="btn" id="clear">Clear local</button>
+            <button class="btn" id="ping-btn" type="button">Ping Backend</button>
+            <pre id="ping-output" style="white-space: pre-wrap;"></pre>
           </div>
           <div class="row">
             <button class="btn" id="start">Start</button>
@@ -369,6 +385,29 @@ async function run() {
 
   const $ = (id) => document.getElementById(id)
   const logLine = (msg) => { $("status").textContent = msg }
+
+  // --- UI wiring ---
+const btn = document.getElementById("ping-btn");
+const out = document.getElementById("ping-output");
+
+if (btn && out) {
+  btn.addEventListener("click", async () => {
+    btn.disabled = true;
+    btn.textContent = "Ping...";
+    out.textContent = "";
+
+    try {
+      const data = await pingBackend();
+      out.textContent = JSON.stringify(data, null, 2);
+    } catch (err) {
+      console.error(err);
+      out.textContent = `Erreur: ${err?.message ?? String(err)}`;
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Ping Backend";
+    }
+  });
+}
 
   async function apiWithUser(path, opts = {}) {
     const headers = new Headers(opts.headers || {});
