@@ -75,7 +75,7 @@ function b64urlToUtf8(str) {
 async function pingBackend() {
   console.log("window.location.href:", window.location.href);
   console.log("window.location.origin:", window.location.origin);
-  const res = await fetch("https://serverless-mvp-gw-dev-5gidoaix.ew.gateway.dev/proxy", {
+  const res = await fetch("https://eplace-tek5-activity-427760697417.europe-west1.run.app/proxy", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -594,35 +594,26 @@ async function postAdmin(path) {
   }
 
   async function placePixel(x, y, color) {
-    const res = await fetch("/api/pixel", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      credentials: "include",
-      body: JSON.stringify({ x, y, color })
-    });
+    const color =
+    typeof colorHex === "string"
+      ? parseInt(colorHex.replace("#", ""), 16)
+      : Number(colorHex);
 
-    const data = await res.json().catch(() => ({}));
+  const res = await fetch(`${GATEWAY_BASE}/proxy`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      type: "PLACE_PIXEL",
+      payload: { x, y, color }
+    })
+  });
 
-    if (!res.ok) {
-      if (res.status === 429) {
-        logLine(`⏳ Cooldown. Retry in ${Math.ceil((data.retryAfterMs || 0) / 1000)}s`);
-        return { ok: false, reason: "cooldown" };
-      }
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`PLACE_PIXEL failed: ${res.status} ${text}`);
+  }
 
-      if (res.status === 423 && data?.error === "session_paused") {
-        logLine("⏸️ Session is paused. You can't place pixels right now.");
-        return { ok: false, reason: "paused" };
-      }
-
-      if (res.status === 403 && data?.error === "admin_only") {
-        logLine("⛔ Admin only.");
-        return { ok: false, reason: "admin_only" };
-      }
-      throw new Error(`POST /api/pixel failed (${res.status}) ${JSON.stringify(data)}`);
-    }
-
-    setColorAt(x, y, color);
-    return { ok: true };
+  return res.json();
   }
 
 
