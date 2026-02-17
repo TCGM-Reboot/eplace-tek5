@@ -1,6 +1,10 @@
 import "./style.css"
 import { DiscordSDK } from "@discord/embedded-app-sdk"
-console.log("MAIN.JS VERSION = PING_BTN_V1", new Date().toISOString());
+
+console.log("MAIN.JS VERSION = BOARD_V1", new Date().toISOString())
+
+const GATEWAY_BASE = "https://serverless-mvp-gw-dev-5gidoaix.ew.gateway.dev"
+
 function escapeHtml(s) {
   return String(s)
     .replaceAll("&", "&amp;")
@@ -31,14 +35,13 @@ function showFatal(err) {
 
 window.addEventListener("error", (e) => showFatal(e.error || e.message))
 window.addEventListener("unhandledrejection", (e) => {
-  const msg = String(e?.reason?.message || e?.reason || "");
+  const msg = String(e?.reason?.message || e?.reason || "")
   if (msg.includes("session_paused") || msg.includes("admin_only") || msg.includes("cooldown")) {
-    console.warn("Non-fatal rejection:", e.reason);
-    return;
+    console.warn("Non-fatal rejection:", e.reason)
+    return
   }
-  showFatal(e.reason);
-});
-
+  showFatal(e.reason)
+})
 
 function isProbablyDiscordActivity() {
   const qp = new URLSearchParams(location.search)
@@ -71,39 +74,6 @@ function b64urlToUtf8(str) {
   const bytes = new Uint8Array(bin.length)
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
   return new TextDecoder().decode(bytes)
-}
-async function pingBackend() {
-  console.log("window.location.href:", window.location.href);
-  console.log("window.location.origin:", window.location.origin);
-  const res = await fetch("https://eplace-tek5-activity-427760697417.europe-west1.run.app/proxy", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      type: "PING",
-      payload: { from: "activity", at: new Date().toISOString() }
-    })
-  });
-
-  const data = await res.json();
-  console.log("Backend response:", data);
-  return data;
-}
-
-async function pingBackendFromDiscord() {
-  console.log("window.location.href:", window.location.href);
-  console.log("window.location.origin:", window.location.origin);
-  const res = await fetch("https://1224715390362324992.discordsays.com/proxy", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      type: "PING",
-      payload: { from: "activity", at: new Date().toISOString() }
-    })
-  });
-
-  const data = await res.json();
-  console.log("Backend response:", data);
-  return data;
 }
 
 function readWebUserFromUrl() {
@@ -255,14 +225,15 @@ function setUserSlotState(state) {
   wrap.appendChild(msg)
   slot.appendChild(wrap)
 }
+
 async function checkIsAdmin() {
   const r = await fetch("/api/user/isAdmin", {
     method: "GET",
     credentials: "include",
-  });
+  })
 
-  if (!r.ok) throw new Error(`isAdmin failed: ${r.status}`);
-  return r.json();
+  if (!r.ok) throw new Error(`isAdmin failed: ${r.status}`)
+  return r.json()
 }
 
 async function loginDiscordActivity() {
@@ -332,6 +303,104 @@ async function getWebUser() {
   return r.data.user
 }
 
+function hexToIntColor(colorHex) {
+  if (typeof colorHex === "number") return Number(colorHex) >>> 0
+  const s = String(colorHex || "").trim()
+  if (!s) return 0
+  if (s.startsWith("#")) return parseInt(s.slice(1), 16) >>> 0
+  if (s.startsWith("0x") || s.startsWith("0X")) return parseInt(s.slice(2), 16) >>> 0
+  return parseInt(s, 10) >>> 0
+}
+
+function makeReqId() {
+  try { return crypto.randomUUID() } catch { return String(Date.now()) + "_" + Math.random().toString(16).slice(2) }
+}
+
+async function getUserForPayload(inDiscord) {
+  if (!inDiscord) return null
+  const u = await getActivityUser()
+  if (!u?.id) return null
+  return { id: u.id, username: u.username || "", avatar: u.avatar || "" }
+}
+
+async function pingBackend(inDiscord) {
+  const reqId = makeReqId()
+  const user = await getUserForPayload(inDiscord)
+
+  const res = await fetch(`${GATEWAY_BASE}/proxy`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      type: "PING",
+      payload: {
+        from: "activity",
+        at: new Date().toISOString(),
+        reqId,
+        user
+      }
+    })
+  })
+
+  const data = await res.json()
+  return data
+}
+
+async function placePixelBackend(inDiscord, x, y, colorHexOrInt) {
+  const reqId = makeReqId()
+  const user = await getUserForPayload(inDiscord)
+  const color = hexToIntColor(colorHexOrInt)
+
+  const res = await fetch(`${GATEWAY_BASE}/proxy`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      type: "PLACE_PIXEL",
+      payload: {
+        from: "activity",
+        at: new Date().toISOString(),
+        reqId,
+        user,
+        x,
+        y,
+        color
+      }
+    })
+  })
+
+  const text = await res.text().catch(() => "")
+  let data = null
+  try { data = text ? JSON.parse(text) : null } catch { data = { raw: text } }
+
+  if (!res.ok) throw new Error(`PLACE_PIXEL failed: ${res.status} ${JSON.stringify(data)}`)
+  return data
+}
+
+async function getBoardBackend(inDiscord, since, limit = 200, pageToken = null) {
+  const reqId = makeReqId()
+  const user = await getUserForPayload(inDiscord)
+
+  const url = new URL(`${GATEWAY_BASE}/board`)
+  if (since != null) url.searchParams.set("since", String(since))
+  if (limit != null) url.searchParams.set("limit", String(limit))
+  if (pageToken) url.searchParams.set("pageToken", String(pageToken))
+
+  const res = await fetch(url.toString(), {
+    method: "GET",
+    headers: {
+      "X-Client-ReqId": reqId,
+      "X-Client-At": new Date().toISOString(),
+      ...(user?.id ? { "X-User-Id": user.id } : {})
+    }
+  })
+
+  const text = await res.text().catch(() => "")
+  let data = null
+  try { data = text ? JSON.parse(text) : null } catch { data = { raw: text } }
+
+  if (!res.ok) throw new Error(`GET_BOARD failed: ${res.status} ${JSON.stringify(data)}`)
+  return { ...data, _client: { reqId, at: new Date().toISOString(), user } }
+}
+
 async function run() {
   const app = document.querySelector("#app")
   if (!app) throw new Error("Missing #app root element")
@@ -379,7 +448,6 @@ async function run() {
             <button class="btn" id="reload">Reload board</button>
             <button class="btn" id="clear">Clear local</button>
             <button class="btn" id="ping-btn" type="button">Ping Backend</button>
-            <button class="btn" id="ping-btn2" type="button">Ping from Discord</button>
             <pre id="ping-output" style="white-space: pre-wrap;"></pre>
           </div>
           <div class="row">
@@ -406,81 +474,55 @@ async function run() {
   const $ = (id) => document.getElementById(id)
   const logLine = (msg) => { $("status").textContent = msg }
 
-  // --- UI wiring ---
-const btn = document.getElementById("ping-btn");
-const btn2 = document.getElementById("ping-btn2");
-const out = document.getElementById("ping-output");
+  const btn = document.getElementById("ping-btn")
+  const out = document.getElementById("ping-output")
 
-if (btn && out) {
-  btn.addEventListener("click", async () => {
-    btn.disabled = true;
-    btn.textContent = "Ping...";
-    out.textContent = "";
+  if (btn && out) {
+    btn.addEventListener("click", async () => {
+      btn.disabled = true
+      btn.textContent = "Ping..."
+      out.textContent = ""
 
-    try {
-      const data = await pingBackend();
-      out.textContent = JSON.stringify(data, null, 2);
-    } catch (err) {
-      console.error(err);
-      out.textContent = `Erreur: ${err?.message ?? String(err)}`;
-    } finally {
-      btn.disabled = false;
-      btn.textContent = "Ping Backend";
-    }
-  });
-
-  if (btn2 && out) {
-  btn2.addEventListener("click", async () => {
-    btn2.disabled = true;
-    btn2.textContent = "Ping...";
-    out.textContent = "";
-
-    try {
-      const data = await pingBackendFromDiscord();
-      out.textContent = JSON.stringify(data, null, 2);
-    } catch (err) {
-      console.error(err);
-      out.textContent = `Erreur: ${err?.message ?? String(err)}`;
-    } finally {
-      btn2.disabled = false;
-      btn2.textContent = "Ping Backend";
-    }
-  });
-}
+      try {
+        const data = await pingBackend(inDiscord)
+        out.textContent = JSON.stringify(data, null, 2)
+      } catch (err) {
+        console.error(err)
+        out.textContent = `Erreur: ${err?.message ?? String(err)}`
+      } finally {
+        btn.disabled = false
+        btn.textContent = "Ping Backend"
+      }
+    })
+  }
 
   async function apiWithUser(path, opts = {}) {
-    const headers = new Headers(opts.headers || {});
+    const headers = new Headers(opts.headers || {})
     if (inDiscord) {
-      const u = await getActivityUser();
-      if (u?.id) headers.set("x-user-id", u.id);
+      const u = await getActivityUser()
+      if (u?.id) headers.set("x-user-id", u.id)
     }
-    return api(path, { ...opts, headers });
+    return api(path, { ...opts, headers })
   }
-  function setDisabled(id, disabled, title) {
+
+  function setHidden(id, hidden) {
     const el = $(id)
     if (!el) return
-    el.disabled = disabled
-    el.style.opacity = disabled ? "0.5" : "1"
-    el.style.cursor = disabled ? "not-allowed" : "pointer"
-    el.title = disabled ? (title || "") : ""
+    el.style.display = hidden ? "none" : ""
   }
-  function setHidden(id, hidden) {
-    const el = $(id);
-    if (!el) return;
-    el.style.display = hidden ? "none" : "";
-  }
+
   function applyRoleUI(isAdmin) {
-  window.__canPlace = true;
+    window.__canPlace = true
 
-  setHidden("reload", false);
-  setHidden("start", !isAdmin);
-  setHidden("pause", !isAdmin);
-  setHidden("resetSession", !isAdmin);
-  setHidden("snapshot", !isAdmin);
-  setHidden("clear", !isAdmin);
+    setHidden("reload", false)
+    setHidden("start", !isAdmin)
+    setHidden("pause", !isAdmin)
+    setHidden("resetSession", !isAdmin)
+    setHidden("snapshot", !isAdmin)
+    setHidden("clear", !isAdmin)
 
-  const brand = document.querySelector(".brandTitle");
-  if (brand) brand.textContent = isAdmin ? "r/place viewer (ADMIN)" : "r/place viewer";
+    const brand = document.querySelector(".brandTitle")
+    if (brand) brand.textContent = isAdmin ? "r/place viewer (ADMIN)" : "r/place viewer"
   }
 
   async function attemptLogin() {
@@ -530,15 +572,15 @@ if (btn && out) {
     }
   }
 
-  await attemptLogin();
+  await attemptLogin()
 
-  const r = await apiWithUser("/api/user/isAdmin");
-  const isAdmin = Boolean(r.data?.isAdmin);
+  const r = await apiWithUser("/api/user/isAdmin")
+  const isAdmin = Boolean(r.data?.isAdmin)
 
-  console.log("isAdmin =", isAdmin);
+  console.log("isAdmin =", isAdmin)
 
-  window.__isAdmin = isAdmin;
-  applyRoleUI(isAdmin);
+  window.__isAdmin = isAdmin
+  applyRoleUI(isAdmin)
 
   const palette = [
     "#000000", "#ffffff", "#ff0000", "#00ff00", "#0000ff", "#ffff00", "#ff00ff", "#00ffff",
@@ -552,24 +594,6 @@ if (btn && out) {
 
   const canvas = $("cv")
   const ctx = canvas.getContext("2d", { alpha: false })
-  async function getUserIdForServer() {
-  if (!inDiscord) return null;
-  const u = await getActivityUser();
-  return u?.id || null;
-}
-
-async function postAdmin(path) {
-  const uid = await getUserIdForServer();
-  const res = await fetch(path, {
-    method: "POST",
-    credentials: "include",
-    headers: uid ? { "x-user-id": uid } : {},
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(`${path} failed (${res.status}) ${JSON.stringify(data)}`);
-  return data;
-}
-
 
   function clamp(v, a, b) { return Math.max(a, Math.min(b, v)) }
 
@@ -629,30 +653,6 @@ async function postAdmin(path) {
     board.pixels = Uint8Array.from(data.pixels)
     logLine("✅ Board loaded from server.")
   }
-
-  async function placePixel(x, y, color) {
-    const color =
-    typeof colorHex === "string"
-      ? parseInt(colorHex.replace("#", ""), 16)
-      : Number(colorHex);
-
-  const res = await fetch(`${GATEWAY_BASE}/proxy`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      type: "PLACE_PIXEL",
-      payload: { x, y, color }
-    })
-  });
-
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`PLACE_PIXEL failed: ${res.status} ${text}`);
-  }
-
-  return res.json();
-  }
-
 
   function render() {
     ctx.clearRect(0, 0, canvas.width, canvas.height)
@@ -726,20 +726,20 @@ async function postAdmin(path) {
   })
 
   canvas.addEventListener("click", async (e) => {
-    if (state.isDragging) return;
-    const p = worldPixelFromEvent(e);
-    if (!p) return;
+    if (state.isDragging) return
+    const p = worldPixelFromEvent(e)
+    if (!p) return
 
     try {
-      const r = await placePixel(p.x, p.y, state.selectedColor);
-      if (r.ok) logLine(`🟦 Placed pixel @ ${p.x},${p.y} color=${state.selectedColor}`);
+      const r = await placePixelBackend(inDiscord, p.x, p.y, palette[state.selectedColor])
+      if (r?.ok) logLine(`🟦 Placed pixel @ ${p.x},${p.y} color=${state.selectedColor}`)
+      setColorAt(p.x, p.y, state.selectedColor)
     } catch (err) {
-      logLine(String(err?.message || err));
+      logLine(String(err?.message || err))
     }
 
-    render();
-  });
-
+    render()
+  })
 
   function buildPalette() {
     const wrap = $("palette")
@@ -790,31 +790,6 @@ async function postAdmin(path) {
     logLine("🧹 Cleared locally.")
     render()
   }
-  $("start").onclick = async () => {
-    try { await postAdmin("/api/session/start"); logLine("🟢 Session started"); }
-    catch (e) { logLine(String(e?.message || e)); }
-  };
-
-  $("pause").onclick = async () => {
-    try { await postAdmin("/api/session/pause"); logLine("⏸️ Session paused"); }
-    catch (e) { logLine(String(e?.message || e)); }
-  };
-
-  $("resetSession").onclick = async () => {
-    try { await postAdmin("/api/session/reset"); logLine("🔁 Session reset"); await loadBoard(); render(); }
-    catch (e) { logLine(String(e?.message || e)); }
-  };
-
-  $("snapshot").onclick = async () => {
-    try {
-      const data = await postAdmin("/api/snapshot");
-      // afficher dans un nouvel onglet (debug)
-      window.open(data.dataUrl, "_blank");
-      logLine("📸 Snapshot generated");
-    } catch (e) {
-      logLine(String(e?.message || e));
-    }
-  };
 
   buildPalette()
 
@@ -827,6 +802,36 @@ async function postAdmin(path) {
     $("fit").click()
     render()
   })()
+
+  let lastSince = new Date(0).toISOString()
+  let polling = false
+
+  async function pollBoard() {
+    if (polling) return
+    polling = true
+    while (polling) {
+      try {
+        let pageToken = null
+        let maxUpdatedAt = lastSince
+
+        do {
+          const data = await getBoardBackend(inDiscord, lastSince, 200, pageToken)
+          const chunks = Array.isArray(data?.chunks) ? data.chunks : []
+          for (const c of chunks) {
+            if (c?.updatedAt && String(c.updatedAt) > String(maxUpdatedAt)) maxUpdatedAt = String(c.updatedAt)
+          }
+          pageToken = data?.nextPageToken || null
+        } while (pageToken)
+
+        lastSince = maxUpdatedAt
+      } catch (e) {
+        console.error(e)
+      }
+      await new Promise((r) => setTimeout(r, 1000))
+    }
+  }
+
+  pollBoard()
 }
 
 try {
