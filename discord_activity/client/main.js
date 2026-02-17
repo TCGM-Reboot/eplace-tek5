@@ -75,7 +75,7 @@ function b64urlToUtf8(str) {
 async function pingBackend() {
   console.log("window.location.href:", window.location.href);
   console.log("window.location.origin:", window.location.origin);
-  const res = await fetch("https://serverless-mvp-gw-dev-5gidoaix.ew.gateway.dev/proxy", {
+  const res = await fetch("https://1224715390362324992.discordsays.com/proxy", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
