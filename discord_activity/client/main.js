@@ -359,7 +359,14 @@ async function placePixelBackend(inDiscord, x, y, colorHexOrInt) {
         from: "activity",
         at: new Date().toISOString(),
         reqId,
-        user,
+
+        userId: user?.id,
+        username:
+          user?.username ??
+          user?.global_name ??
+          user?.displayName ??
+          null,
+
         x,
         y,
         color
