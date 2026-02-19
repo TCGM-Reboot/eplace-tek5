@@ -341,26 +341,42 @@ async function pingBackend(inDiscord) {
 async function resetBoardBackend(inDiscord) {
   const reqId = makeReqId()
   const userId = await getUserIdForReset(inDiscord)
+  const payload = {
+    type: "RESET_BOARD",
+    payload: {
+      from: "activity",
+      at: new Date().toISOString(),
+      reqId,
+      userId
+    }
+  }
+
+  console.log(JSON.stringify({ t: new Date().toISOString(), event: "reset:request", url: `${GATEWAY_BASE}/proxy`, payload }))
+  const t0 = performance.now()
 
   const res = await fetch(`${GATEWAY_BASE}/proxy`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      type: "RESET_BOARD",
-      payload: {
-        from: "activity",
-        at: new Date().toISOString(),
-        reqId,
-        userId
-      }
-    })
+    body: JSON.stringify(payload)
   })
 
   const text = await res.text().catch(() => "")
   let data = null
   try { data = text ? JSON.parse(text) : null } catch { data = { raw: text } }
+
+  console.log(JSON.stringify({
+    t: new Date().toISOString(),
+    event: "reset:response",
+    status: res.status,
+    ok: res.ok,
+    ms: Math.round(performance.now() - t0),
+    reqId,
+    userId: userId || null,
+    data
+  }))
+
   if (!res.ok) throw new Error(`RESET_BOARD failed: ${res.status} ${JSON.stringify(data)}`)
-  return data
+  return { data, _client: { reqId, userId, ms: Math.round(performance.now() - t0) } }
 }
 
 async function placePixelBackend(inDiscord, x, y, colorHexOrInt) {
@@ -427,7 +443,7 @@ async function getBoardBackend(inDiscord, since, limit = 200, pageToken = null, 
 
   const url = new URL(`${GATEWAY_BASE}/board`)
   if (since != null) url.searchParams.set("since", String(since))
-  if (limit !=null) url.searchParams.set("limit", String(limit))
+  if (limit != null) url.searchParams.set("limit", String(limit))
   if (pageToken) url.searchParams.set("pageToken", String(pageToken))
   for (const [k, v] of Object.entries(extra || {})) {
     if (v === undefined || v === null) continue
@@ -1158,17 +1174,32 @@ async function run() {
       resetBtn.disabled = true
       resetBtn.textContent = "Resetting..."
       try {
+        console.log(JSON.stringify({ t: new Date().toISOString(), event: "reset:ui_click", inDiscord }))
         logLine("⏳ Resetting board (deleting ALL chunks)...")
-        await resetBoardBackend(inDiscord)
+        const rr = await resetBoardBackend(inDiscord)
+        console.log(JSON.stringify({ t: new Date().toISOString(), event: "reset:proxy_ok", rr }))
+
         clearBoardLocal()
         lastSince = new Date(0).toISOString()
+        console.log(JSON.stringify({ t: new Date().toISOString(), event: "reset:local_cleared", lastSince }))
+
         logLine("⏳ Reloading board after reset...")
+        const t0 = performance.now()
         const r2 = await loadBoardFromServerlessFull()
+        console.log(JSON.stringify({
+          t: new Date().toISOString(),
+          event: "reset:reload_done",
+          ms: Math.round(performance.now() - t0),
+          chunksApplied: r2.chunksApplied,
+          metaApplied: r2.metaApplied
+        }))
+
         logLine(`✅ Board reset (chunks=${r2.chunksApplied}${r2.metaApplied ? ", meta" : ""}).`)
         $("fit").click()
         render()
         resolveHoverOwner(state.hover)
       } catch (e) {
+        console.log(JSON.stringify({ t: new Date().toISOString(), event: "reset:error", msg: String(e?.message || e), err: String(e?.stack || e) }))
         logLine(String(e?.message || e))
       } finally {
         resetBtn.disabled = false
