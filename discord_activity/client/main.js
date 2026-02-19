@@ -36,10 +36,7 @@ function showFatal(err) {
 window.addEventListener("error", (e) => showFatal(e.error || e.message))
 window.addEventListener("unhandledrejection", (e) => {
   const msg = String(e?.reason?.message || e?.reason || "")
-  if (msg.includes("session_paused") || msg.includes("admin_only") || msg.includes("cooldown") || msg.includes("rate")) {
-    console.warn("Non-fatal rejection:", e.reason)
-    return
-  }
+
   showFatal(e.reason)
 })
 
@@ -1167,10 +1164,7 @@ async function run() {
   }
 
   $("reset").onclick = async () => {
-    if (!window.__isAdmin) {
-      logLine("admin_only")
-      return
-    }
+
 
     const b = $("reset")
     const prev = b ? b.textContent : "Reset"
@@ -1199,10 +1193,7 @@ async function run() {
   const snapBtn = $("snapshot")
   if (snapBtn) {
     snapBtn.onclick = async () => {
-      if (!window.__isAdmin) {
-        logLine("admin_only")
-        return
-      }
+
 
       const prev = snapBtn.textContent
       snapBtn.disabled = true
@@ -1233,10 +1224,7 @@ async function run() {
   const resetSessionBtn = $("resetSession")
   if (resetSessionBtn) {
     resetSessionBtn.onclick = async () => {
-      if (!window.__isAdmin) {
-        logLine("admin_only")
-        return
-      }
+
       const prevText = resetSessionBtn.textContent
       resetSessionBtn.disabled = true
       resetSessionBtn.textContent = "Resetting..."
