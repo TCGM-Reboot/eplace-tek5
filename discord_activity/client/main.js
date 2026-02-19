@@ -1223,7 +1223,7 @@ async function run() {
 
   const resetSessionBtn = $("resetSession")
   if (resetSessionBtn) {
-    resetSessionBtn.onclick = async () => {
+    resetSessionBtn.onclick = async () => {azad
 
       const prevText = resetSessionBtn.textContent
       resetSessionBtn.disabled = true
