@@ -544,7 +544,7 @@ async function run() {
       <div class="topbar">
         <div class="brand">
           <div class="badge"></div>
-          <div class="brandTitle">r/place AI ULYSSEr viewer</div>
+          <div class="brandTitle">r/place AI ULYSSE viewer</div>
         </div>
         <div id="userSlot"></div>
       </div>
