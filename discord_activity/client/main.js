@@ -1,7 +1,7 @@
 import "./style.css"
 import { DiscordSDK } from "@discord/embedded-app-sdk"
 
-console.log("MAIN.JS VERSION = BOARD_V3_NO_PLACE", new Date().toISOString())
+console.log("MAIN.JS VERSION = BOARD_V2_SERVERLESS_RELOAD", new Date().toISOString())
 
 const GATEWAY_BASE = "https://1224715390362324992.discordsays.com/gcp"
 
@@ -227,11 +227,15 @@ function setUserSlotState(state) {
 }
 
 async function loginDiscordActivity() {
+  console.log(JSON.stringify({ t: new Date().toISOString(), event: "login_start", href: location.href, origin: location.origin, search: location.search }))
   const cfg = await api("/api/auth/config")
   if (!cfg.res.ok || !cfg.data?.clientId) throw new Error("missing_client_id")
 
+  console.log(JSON.stringify({ t: new Date().toISOString(), event: "config_loaded", clientId: cfg.data.clientId, clientIdLen: String(cfg.data.clientId).length }))
+
   const discordSdk = new DiscordSDK(cfg.data.clientId)
   await discordSdk.ready()
+  console.log(JSON.stringify({ t: new Date().toISOString(), event: "sdk_ready" }))
 
   const authz = await discordSdk.commands.authorize({
     client_id: cfg.data.clientId,
@@ -240,6 +244,8 @@ async function loginDiscordActivity() {
     prompt: "consent",
     scope: ["identify"]
   })
+
+  console.log(JSON.stringify({ t: new Date().toISOString(), event: "authorize_done", code_present: Boolean(authz?.code), code_len: String(authz?.code || "").length }))
 
   const tokenRes = await api("/api/token", {
     method: "POST",
@@ -252,7 +258,11 @@ async function loginDiscordActivity() {
     throw new Error(`token_exchange_failed ${d}`)
   }
 
+  console.log(JSON.stringify({ t: new Date().toISOString(), event: "token_ok", access_token_len: String(tokenRes.data.access_token).length }))
+
   const auth = await discordSdk.commands.authenticate({ access_token: tokenRes.data.access_token })
+  console.log(JSON.stringify({ t: new Date().toISOString(), event: "authenticate_done", user_present: Boolean(auth?.user) }))
+
   if (!auth?.user) throw new Error("authenticate_failed")
 
   const u = {
@@ -263,6 +273,7 @@ async function loginDiscordActivity() {
   }
 
   localStorage.setItem("activity_user", JSON.stringify(u))
+  console.log(JSON.stringify({ t: new Date().toISOString(), event: "user_saved", id: u.id, username: u.username }))
   return u
 }
 
@@ -321,6 +332,41 @@ async function pingBackend(inDiscord) {
   })
 
   const data = await res.json()
+  return data
+}
+
+async function placePixelBackend(inDiscord, x, y, colorHexOrInt) {
+  const reqId = makeReqId()
+  const user = await getUserForPayload(inDiscord)
+  const color = hexToIntColor(colorHexOrInt)
+
+  const res = await fetch(`${GATEWAY_BASE}/proxy`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      type: "PLACE_PIXEL",
+      payload: {
+        from: "activity",
+        at: new Date().toISOString(),
+        reqId,
+        userId: user?.id,
+        username:
+          user?.username ??
+          user?.global_name ??
+          user?.displayName ??
+          null,
+        x,
+        y,
+        color
+      }
+    })
+  })
+
+  const text = await res.text().catch(() => "")
+  let data = null
+  try { data = text ? JSON.parse(text) : null } catch { data = { raw: text } }
+
+  if (!res.ok) throw new Error(`PLACE_PIXEL failed: ${res.status} ${JSON.stringify(data)}`)
   return data
 }
 
@@ -403,7 +449,7 @@ async function run() {
             <div style="margin-top:6px; opacity:.7;">
               - Molette: zoom<br/>
               - Drag: pan<br/>
-              - Click: does nothing
+              - Click: place pixel
             </div>
           </div>
 
@@ -449,23 +495,24 @@ async function run() {
   const $ = (id) => document.getElementById(id)
   const logLine = (msg) => { $("status").textContent = msg }
 
-  const pingBtn = document.getElementById("ping-btn")
-  const pingOut = document.getElementById("ping-output")
+  const btn = document.getElementById("ping-btn")
+  const out = document.getElementById("ping-output")
 
-  if (pingBtn && pingOut) {
-    pingBtn.addEventListener("click", async () => {
-      pingBtn.disabled = true
-      pingBtn.textContent = "Ping..."
-      pingOut.textContent = ""
+  if (btn && out) {
+    btn.addEventListener("click", async () => {
+      btn.disabled = true
+      btn.textContent = "Ping..."
+      out.textContent = ""
+
       try {
         const data = await pingBackend(inDiscord)
-        pingOut.textContent = JSON.stringify(data, null, 2)
+        out.textContent = JSON.stringify(data, null, 2)
       } catch (err) {
         console.error(err)
-        pingOut.textContent = `Erreur: ${err?.message ?? String(err)}`
+        out.textContent = `Erreur: ${err?.message ?? String(err)}`
       } finally {
-        pingBtn.disabled = false
-        pingBtn.textContent = "Ping Backend"
+        btn.disabled = false
+        btn.textContent = "Ping Backend"
       }
     })
   }
@@ -486,18 +533,22 @@ async function run() {
   }
 
   function applyRoleUI(isAdmin) {
-    window.__canPlace = false
+    window.__canPlace = true
+
     setHidden("reload", false)
     setHidden("start", !isAdmin)
     setHidden("pause", !isAdmin)
     setHidden("resetSession", !isAdmin)
     setHidden("snapshot", !isAdmin)
     setHidden("clear", !isAdmin)
+
     const brand = document.querySelector(".brandTitle")
     if (brand) brand.textContent = isAdmin ? "r/place viewer (ADMIN)" : "r/place viewer"
   }
 
   async function attemptLogin() {
+    console.log(JSON.stringify({ t: new Date().toISOString(), event: "attempt_login", inDiscord }))
+
     if (!inDiscord) {
       const fromUrl = readWebUserFromUrl()
       if (fromUrl?.id) {
@@ -528,6 +579,7 @@ async function run() {
 
     try {
       const cached = await getActivityUser()
+      console.log(JSON.stringify({ t: new Date().toISOString(), event: "cache", present: Boolean(cached?.id) }))
       if (cached?.id) {
         setUserSlotState({ type: "user", user: cached })
         return
@@ -535,6 +587,7 @@ async function run() {
       const u = await loginDiscordActivity()
       setUserSlotState({ type: "user", user: u })
     } catch (e) {
+      console.log(JSON.stringify({ t: new Date().toISOString(), event: "login_error", message: String(e?.message || e), stack: String(e?.stack || "") }))
       logLine(String(e?.message || e))
       setUserSlotState({ type: "error", onRetry: attemptLogin })
     }
@@ -542,8 +595,11 @@ async function run() {
 
   await attemptLogin()
 
-  const adminRes = await apiWithUser("/api/user/isAdmin")
-  const isAdmin = Boolean(adminRes.data?.isAdmin)
+  const r = await apiWithUser("/api/user/isAdmin")
+  const isAdmin = Boolean(r.data?.isAdmin)
+
+  console.log("isAdmin =", isAdmin)
+
   window.__isAdmin = isAdmin
   applyRoleUI(isAdmin)
 
@@ -758,11 +814,19 @@ async function run() {
     state.dragStart = null
   })
 
-  canvas.addEventListener("click", (e) => {
+  canvas.addEventListener("click", async (e) => {
     if (state.isDragging) return
     const p = worldPixelFromEvent(e)
     if (!p) return
-    logLine(`🟨 Click ignored @ ${p.x},${p.y}`)
+
+    try {
+      const rr = await placePixelBackend(inDiscord, p.x, p.y, palette[state.selectedColor])
+      if (rr?.ok) logLine(`🟦 Placed pixel @ ${p.x},${p.y} color=${state.selectedColor}`)
+      setColorAt(p.x, p.y, state.selectedColor)
+    } catch (err) {
+      logLine(String(err?.message || err))
+    }
+
     render()
   })
 
