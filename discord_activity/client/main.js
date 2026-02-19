@@ -1,9 +1,9 @@
 import "./style.css"
 import { DiscordSDK } from "@discord/embedded-app-sdk"
 
-console.log("MAIN.JS VERSION = BOARD_V3_SERVERLESS_GET_BOARD", new Date().toISOString())
+console.log("MAIN.JS VERSION = BOARD_V4_CSP_SELF_PROXY", new Date().toISOString())
 
-const GATEWAY_BASE = "https://serverless-mvp-gw-dev-5gidoaix.ew.gateway.dev"
+const PROXY_PATH = "/proxy"
 
 function escapeHtml(s) {
   return String(s)
@@ -317,8 +317,9 @@ async function proxyCall(inDiscord, type, payload = {}) {
   const reqId = makeReqId()
   const user = await getUserForPayload(inDiscord)
 
-  const res = await fetch(`${GATEWAY_BASE}/proxy`, {
+  const res = await fetch(PROXY_PATH, {
     method: "POST",
+    credentials: "include",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       type,
@@ -394,22 +395,9 @@ async function decodeGzipB64ToBytes(b64) {
   return unz
 }
 
-async function getBoardServerless(since, limit = 200, pageToken = null, extra = {}) {
-  const url = new URL(`${GATEWAY_BASE}/board`)
-  if (since != null) url.searchParams.set("since", String(since))
-  if (limit != null) url.searchParams.set("limit", String(limit))
-  if (pageToken) url.searchParams.set("pageToken", String(pageToken))
-  for (const [k, v] of Object.entries(extra || {})) {
-    if (v === undefined || v === null || v === "") continue
-    url.searchParams.set(k, String(v))
-  }
-
-  const res = await fetch(url.toString(), { method: "GET" })
-  const text = await res.text().catch(() => "")
-  let data = null
-  try { data = text ? JSON.parse(text) : null } catch { data = { raw: text } }
-  if (!res.ok) throw new Error(`GET /board failed: ${res.status} ${JSON.stringify(data)}`)
-  return data
+async function getBoardServerlessViaProxy(since, limit = 200, pageToken = null, extra = {}) {
+  const payload = { since, limit, pageToken, ...extra }
+  return proxyCall(false, "GET_BOARD", payload)
 }
 
 async function run() {
@@ -522,14 +510,12 @@ async function run() {
 
   function applyRoleUI(isAdmin) {
     window.__canPlace = true
-
     setHidden("reload", false)
     setHidden("start", !isAdmin)
     setHidden("pause", !isAdmin)
     setHidden("resetSession", !isAdmin)
     setHidden("snapshot", !isAdmin)
     setHidden("clear", !isAdmin)
-
     const brand = document.querySelector(".brandTitle")
     if (brand) brand.textContent = isAdmin ? "r/place viewer (ADMIN)" : "r/place viewer"
   }
@@ -585,8 +571,6 @@ async function run() {
 
   const r = await apiWithUser("/api/user/isAdmin")
   const isAdmin = Boolean(r.data?.isAdmin)
-
-  console.log("isAdmin =", isAdmin)
 
   window.__isAdmin = isAdmin
   applyRoleUI(isAdmin)
@@ -730,12 +714,12 @@ async function run() {
     } catch {}
   }
 
-  async function loadBoardFullViaServerless() {
+  async function loadBoardFullViaProxy() {
     let pageToken = null
     let gotMeta = false
     let total = 0
     do {
-      const data = await getBoardServerless(null, 200, pageToken, gotMeta ? {} : { includeMeta: "true" })
+      const data = await getBoardServerlessViaProxy(null, 200, pageToken, gotMeta ? {} : { includeMeta: "true" })
       const chunks = Array.isArray(data?.chunks) ? data.chunks : []
       for (const c of chunks) {
         if (!gotMeta && c?.metaGzipB64) gotMeta = true
@@ -745,7 +729,7 @@ async function run() {
       pageToken = data?.nextPageToken || null
     } while (pageToken)
 
-    logLine(`✅ Board loaded from serverless /board (${total} chunks).`)
+    logLine(`✅ Board loaded via ${PROXY_PATH} (${total} chunks).`)
   }
 
   function render() {
@@ -888,7 +872,7 @@ async function run() {
   $("reload").onclick = async () => {
     try {
       await withBtn("reload", "Reloading...", async () => {
-        await loadBoardFullViaServerless()
+        await loadBoardFullViaProxy()
         render()
       })
     } catch (e) {
@@ -950,9 +934,9 @@ async function run() {
 
   ;(async () => {
     try {
-      await loadBoardFullViaServerless()
+      await loadBoardFullViaProxy()
     } catch (e) {
-      logLine(String(e?.message || "⚠️ /board unreachable."))
+      logLine(String(e?.message || `⚠️ ${PROXY_PATH} unreachable.`))
     }
     $("fit").click()
     render()
@@ -971,7 +955,7 @@ async function run() {
         let appliedAny = false
 
         do {
-          const data = await getBoardServerless(lastSince, 200, pageToken, {})
+          const data = await getBoardServerlessViaProxy(lastSince, 200, pageToken, {})
           const chunks = Array.isArray(data?.chunks) ? data.chunks : []
           for (const c of chunks) {
             if (c?.updatedAt && String(c.updatedAt) > String(maxUpdatedAt)) maxUpdatedAt = String(c.updatedAt)
