@@ -1,7 +1,7 @@
 import "./style.css"
 import { DiscordSDK } from "@discord/embedded-app-sdk"
 
-console.log("MAIN.JS VERSION = BOARD_V3_NO_PLACE", new Date().toISOString())
+console.log("MAIN.JS VERSION = BOARD_V4_PLACE_PIXEL", new Date().toISOString())
 
 const GATEWAY_BASE = "https://1224715390362324992.discordsays.com/gcp"
 
@@ -36,7 +36,7 @@ function showFatal(err) {
 window.addEventListener("error", (e) => showFatal(e.error || e.message))
 window.addEventListener("unhandledrejection", (e) => {
   const msg = String(e?.reason?.message || e?.reason || "")
-  if (msg.includes("session_paused") || msg.includes("admin_only") || msg.includes("cooldown")) {
+  if (msg.includes("session_paused") || msg.includes("admin_only") || msg.includes("cooldown") || msg.includes("rate")) {
     console.warn("Non-fatal rejection:", e.reason)
     return
   }
@@ -282,29 +282,37 @@ async function getWebUser() {
   return r.data.user
 }
 
-function hexToIntColor(colorHex) {
-  if (typeof colorHex === "number") return Number(colorHex) >>> 0
-  const s = String(colorHex || "").trim()
-  if (!s) return 0
-  if (s.startsWith("#")) return parseInt(s.slice(1), 16) >>> 0
-  if (s.startsWith("0x") || s.startsWith("0X")) return parseInt(s.slice(2), 16) >>> 0
-  return parseInt(s, 10) >>> 0
-}
-
 function makeReqId() {
   try { return crypto.randomUUID() } catch { return String(Date.now()) + "_" + Math.random().toString(16).slice(2) }
 }
 
-async function getUserForPayload(inDiscord) {
-  if (!inDiscord) return null
-  const u = await getActivityUser()
-  if (!u?.id) return null
-  return { id: u.id, username: u.username || "", avatar: u.avatar || "" }
+async function getCurrentUser(inDiscord) {
+  if (inDiscord) {
+    const u = await getActivityUser()
+    if (!u?.id) return null
+    return { id: String(u.id), username: String(u.username || ""), avatar: String(u.avatar || "") }
+  }
+
+  const fromUrl = readWebUserFromUrl()
+  if (fromUrl?.id) return { id: String(fromUrl.id), username: String(fromUrl.username || ""), avatar: String(fromUrl.avatar || "") }
+
+  const cached = getCachedWebUser()
+  if (cached?.id) return { id: String(cached.id), username: String(cached.username || ""), avatar: String(cached.avatar || "") }
+
+  try {
+    const wu = await getWebUser()
+    if (wu?.id) {
+      try { localStorage.setItem("web_user_cache", JSON.stringify(wu)) } catch {}
+      return { id: String(wu.id), username: String(wu.username || ""), avatar: String(wu.avatar || "") }
+    }
+  } catch {}
+
+  return null
 }
 
 async function pingBackend(inDiscord) {
   const reqId = makeReqId()
-  const user = await getUserForPayload(inDiscord)
+  const user = await getCurrentUser(inDiscord)
 
   const res = await fetch(`${GATEWAY_BASE}/proxy`, {
     method: "POST",
@@ -320,13 +328,67 @@ async function pingBackend(inDiscord) {
     })
   })
 
-  const data = await res.json()
+  const data = await res.json().catch(() => ({}))
+  return data
+}
+
+function hexToRgbInt(hex) {
+  const s = String(hex || "").trim()
+  if (!s) return 0
+  const h = s.startsWith("#") ? s.slice(1) : s
+  const n = parseInt(h, 16)
+  if (!Number.isFinite(n)) return 0
+  return n & 0xffffff
+}
+
+async function placePixelBackend(inDiscord, x, y, colorHex, extra = {}) {
+  const reqId = makeReqId()
+  const user = await getCurrentUser(inDiscord)
+  if (!user?.id) {
+    const err = new Error("not_authenticated")
+    err.code = "NOT_AUTHENTICATED"
+    throw err
+  }
+
+  const color = hexToRgbInt(colorHex)
+
+  const res = await fetch(`${GATEWAY_BASE}/proxy`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      type: "PLACE_PIXEL",
+      payload: {
+        from: "activity",
+        at: new Date().toISOString(),
+        reqId,
+        x,
+        y,
+        color,
+        userId: user.id,
+        username: user.username || "",
+        ...extra
+      }
+    })
+  })
+
+  const text = await res.text().catch(() => "")
+  let data = null
+  try { data = text ? JSON.parse(text) : null } catch { data = { raw: text } }
+
+  if (!res.ok) {
+    const msg = (data && (data.error || data.message)) ? String(data.error || data.message) : (text || `HTTP_${res.status}`)
+    const err = new Error(msg)
+    err.status = res.status
+    err.data = data
+    throw err
+  }
+
   return data
 }
 
 async function getBoardBackend(inDiscord, since, limit = 200, pageToken = null, extra = {}) {
   const reqId = makeReqId()
-  const user = await getUserForPayload(inDiscord)
+  const user = await getCurrentUser(inDiscord)
 
   const url = new URL(`${GATEWAY_BASE}/board`)
   if (since != null) url.searchParams.set("since", String(since))
@@ -403,7 +465,7 @@ async function run() {
             <div style="margin-top:6px; opacity:.7;">
               - Molette: zoom<br/>
               - Drag: pan<br/>
-              - Click: does nothing
+              - Click: place pixel (if allowed)
             </div>
           </div>
 
@@ -475,6 +537,9 @@ async function run() {
     if (inDiscord) {
       const u = await getActivityUser()
       if (u?.id) headers.set("x-user-id", u.id)
+    } else {
+      const u = getCachedWebUser()
+      if (u?.id) headers.set("x-user-id", u.id)
     }
     return api(path, { ...opts, headers })
   }
@@ -486,7 +551,7 @@ async function run() {
   }
 
   function applyRoleUI(isAdmin) {
-    window.__canPlace = false
+    window.__canPlace = Boolean(isAdmin)
     setHidden("reload", false)
     setHidden("start", !isAdmin)
     setHidden("pause", !isAdmin)
@@ -758,12 +823,49 @@ async function run() {
     state.dragStart = null
   })
 
-  canvas.addEventListener("click", (e) => {
+  let placing = false
+
+  canvas.addEventListener("click", async (e) => {
     if (state.isDragging) return
     const p = worldPixelFromEvent(e)
     if (!p) return
-    logLine(`🟨 Click ignored @ ${p.x},${p.y}`)
+
+    if (!window.__canPlace) {
+      logLine(`🟨 Click ignored @ ${p.x},${p.y}`)
+      render()
+      return
+    }
+
+    if (placing) return
+    placing = true
+
+    const colorHex = palette[state.selectedColor] ?? "#000000"
+    const prev = getColorAt(p.x, p.y)
+    setColorAt(p.x, p.y, state.selectedColor)
     render()
+
+    try {
+      logLine(`⏳ Placing pixel @ ${p.x},${p.y}...`)
+      const r = await placePixelBackend(inDiscord, p.x, p.y, colorHex)
+      if (r && (r.error || r.message)) {
+        const msg = String(r.error || r.message)
+        throw new Error(msg)
+      }
+      logLine(`✅ Placed @ ${p.x},${p.y}`)
+    } catch (err) {
+      setColorAt(p.x, p.y, prev)
+      render()
+      const m = String(err?.message || err || "")
+      if (m.includes("rate") || m.includes("RATE") || m.includes("limited")) {
+        logLine(`⏱️ Rate limited`)
+      } else if (m.includes("not_authenticated")) {
+        logLine(`🔒 Not authenticated`)
+      } else {
+        logLine(`❌ Place failed: ${m}`)
+      }
+    } finally {
+      placing = false
+    }
   })
 
   function buildPalette() {
