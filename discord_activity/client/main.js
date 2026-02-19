@@ -544,7 +544,7 @@ async function run() {
       <div class="topbar">
         <div class="brand">
           <div class="badge"></div>
-          <div class="brandTitle">r/place AIR ULYSSE viewer</div>
+          <div class="brandTitle">r/place AIR ULYSSEr viewer</div>
         </div>
         <div id="userSlot"></div>
       </div>
