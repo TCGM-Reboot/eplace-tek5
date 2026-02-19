@@ -1209,10 +1209,6 @@ async function run() {
   const resetSessionBtn = $("resetSession")
   if (resetSessionBtn) {
     resetSessionBtn.onclick = async () => {
-      if (!window.__isAdmin) {
-        logLine("admin_only")
-        return
-      }
       const prevText = resetSessionBtn.textContent
       resetSessionBtn.disabled = true
       resetSessionBtn.textContent = "Resetting..."
