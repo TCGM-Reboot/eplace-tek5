@@ -1284,7 +1284,7 @@ async function run() {
       logLine("⏳ Loading board from serverless...")
       await reloadBoardFromServerless()
     } catch (e) {
-      logLine(String(e?.message || "⚠️ serverless /board unreachable"))
+      logLine(String(e?.message || "⚠️ sferverless /board unreachable"))
       $("fit").click()
       render()
       resolveHoverOwner(state.hover)
