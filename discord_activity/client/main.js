@@ -22,7 +22,7 @@ function showFatal(err) {
       <div class="topbar">
         <div class="brand">
           <div class="badge"></div>
-          <div class="brandTitle">r/placeds viewer</div>
+          <div class="brandTitle">r/place viewer</div>
         </div>
       </div>
       <div class="fatal">
@@ -544,7 +544,7 @@ async function run() {
       <div class="topbar">
         <div class="brand">
           <div class="badge"></div>
-          <div class="brandTitle">r/place viewer</div>
+          <div class="brandTitle">r/place AIR ULYSSE viewer</div>
         </div>
         <div id="userSlot"></div>
       </div>
