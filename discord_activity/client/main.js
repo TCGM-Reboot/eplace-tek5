@@ -363,17 +363,6 @@ async function resetBoardBackend(inDiscord) {
   return data
 }
 
-async function waitForChunksCleared(inDiscord, tries = 80, delayMs = 500) {
-  const since = new Date(0).toISOString()
-  for (let i = 0; i < tries; i++) {
-    const data = await getBoardBackend(inDiscord, since, 1, null, { includeMeta: "false", includePixelMeta: "false" })
-    const chunks = Array.isArray(data?.chunks) ? data.chunks : []
-    if (chunks.length === 0) return true
-    await new Promise((r) => setTimeout(r, delayMs))
-  }
-  return false
-}
-
 async function placePixelBackend(inDiscord, x, y, colorHexOrInt) {
   const reqId = makeReqId()
   const user = await getUserForPayload(inDiscord)
@@ -438,7 +427,7 @@ async function getBoardBackend(inDiscord, since, limit = 200, pageToken = null, 
 
   const url = new URL(`${GATEWAY_BASE}/board`)
   if (since != null) url.searchParams.set("since", String(since))
-  if (limit != null) url.searchParams.set("limit", String(limit))
+  if (limit !=null) url.searchParams.set("limit", String(limit))
   if (pageToken) url.searchParams.set("pageToken", String(pageToken))
   for (const [k, v] of Object.entries(extra || {})) {
     if (v === undefined || v === null) continue
@@ -763,6 +752,13 @@ async function run() {
     board.metaTs = new Uint32Array(W * H)
   }
 
+  function clearBoardLocal() {
+    if (board?.pixels?.length) board.pixels.fill(1)
+    if (board?.metaHash?.length) board.metaHash.fill(0)
+    if (board?.metaTs?.length) board.metaTs.fill(0)
+    userHashCache.clear()
+  }
+
   function applyChunk(cx, cy, bytes, inferredSize) {
     const sz = Math.max(1, Math.floor(Number(inferredSize || chunkSize || 1)))
     const ox = cx * sz
@@ -1053,92 +1049,6 @@ async function run() {
     render()
   }
 
-  $("reload").onclick = async () => {
-    const b = $("reload")
-    if (b) {
-      b.disabled = true
-      b.textContent = "Reloading..."
-    }
-    try {
-      logLine("⏳ Reloading board from serverless...")
-      const r2 = await loadBoardFromServerlessFull()
-      logLine(`✅ Board reloaded (chunks=${r2.chunksApplied}${r2.metaApplied ? ", meta" : ""}).`)
-      $("fit").click()
-      render()
-      resolveHoverOwner(state.hover)
-    } catch (e) {
-      showFatal(e)
-    } finally {
-      if (b) {
-        b.disabled = false
-        b.textContent = "Reload board"
-      }
-    }
-  }
-
-  $("clear").onclick = () => {
-    board.pixels.fill(1)
-    board.metaHash.fill(0)
-    board.metaTs.fill(0)
-    userHashCache.clear()
-    logLine("🧹 Cleared locally.")
-    render()
-    resolveHoverOwner(state.hover)
-  }
-
-  const resetBtn = $("resetSession")
-  if (resetBtn) {
-    resetBtn.onclick = async () => {
-      if (!window.__isAdmin) {
-        logLine("admin_only")
-        return
-      }
-      const prevText = resetBtn.textContent
-      resetBtn.disabled = true
-      resetBtn.textContent = "Resetting..."
-      try {
-        logLine("⏳ Resetting board (deleting ALL chunks)...")
-        await resetBoardBackend(inDiscord)
-
-        board.pixels.fill(1)
-        board.metaHash.fill(0)
-        board.metaTs.fill(0)
-        userHashCache.clear()
-        lastSince = new Date(0).toISOString()
-
-        logLine("⏳ Waiting for chunks deletion to complete...")
-        await waitForChunksCleared(inDiscord, 80, 500)
-
-        logLine("⏳ Reloading board after reset...")
-        const r2 = await loadBoardFromServerlessFull()
-        logLine(`✅ Board reset (chunks=${r2.chunksApplied}${r2.metaApplied ? ", meta" : ""}).`)
-        $("fit").click()
-        render()
-        resolveHoverOwner(state.hover)
-      } catch (e) {
-        logLine(String(e?.message || e))
-      } finally {
-        resetBtn.disabled = false
-        resetBtn.textContent = prevText
-      }
-    }
-  }
-
-  buildPalette()
-
-  ;(async () => {
-    try {
-      logLine("⏳ Loading board from serverless...")
-      const r2 = await loadBoardFromServerlessFull()
-      logLine(`✅ Board loaded (chunks=${r2.chunksApplied}${r2.metaApplied ? ", meta" : ""}).`)
-    } catch (e) {
-      logLine(String(e?.message || "⚠️ serverless /board unreachable"))
-    }
-    $("fit").click()
-    render()
-    resolveHoverOwner(state.hover)
-  })()
-
   let lastSince = new Date(0).toISOString()
   let polling = false
 
@@ -1204,6 +1114,85 @@ async function run() {
       await new Promise((r) => setTimeout(r, 1000))
     }
   }
+
+  $("reload").onclick = async () => {
+    const b = $("reload")
+    if (b) {
+      b.disabled = true
+      b.textContent = "Reloading..."
+    }
+    try {
+      logLine("⏳ Reloading board from serverless...")
+      clearBoardLocal()
+      lastSince = new Date(0).toISOString()
+      const r2 = await loadBoardFromServerlessFull()
+      logLine(`✅ Board reloaded (chunks=${r2.chunksApplied}${r2.metaApplied ? ", meta" : ""}).`)
+      $("fit").click()
+      render()
+      resolveHoverOwner(state.hover)
+    } catch (e) {
+      showFatal(e)
+    } finally {
+      if (b) {
+        b.disabled = false
+        b.textContent = "Reload board"
+      }
+    }
+  }
+
+  $("clear").onclick = () => {
+    clearBoardLocal()
+    logLine("🧹 Cleared locally.")
+    render()
+    resolveHoverOwner(state.hover)
+  }
+
+  const resetBtn = $("resetSession")
+  if (resetBtn) {
+    resetBtn.onclick = async () => {
+      if (!window.__isAdmin) {
+        logLine("admin_only")
+        return
+      }
+      const prevText = resetBtn.textContent
+      resetBtn.disabled = true
+      resetBtn.textContent = "Resetting..."
+      try {
+        logLine("⏳ Resetting board (deleting ALL chunks)...")
+        await resetBoardBackend(inDiscord)
+        clearBoardLocal()
+        lastSince = new Date(0).toISOString()
+        logLine("⏳ Reloading board after reset...")
+        const r2 = await loadBoardFromServerlessFull()
+        logLine(`✅ Board reset (chunks=${r2.chunksApplied}${r2.metaApplied ? ", meta" : ""}).`)
+        $("fit").click()
+        render()
+        resolveHoverOwner(state.hover)
+      } catch (e) {
+        logLine(String(e?.message || e))
+      } finally {
+        resetBtn.disabled = false
+        resetBtn.textContent = prevText
+      }
+    }
+  }
+
+  buildPalette()
+
+  ;(async () => {
+    try {
+      logLine("⏳ Loading board from serverless...")
+      clearBoardLocal()
+      lastSince = new Date(0).toISOString()
+      const r2 = await loadBoardFromServerlessFull()
+      logLine(`✅ Board loaded (chunks=${r2.chunksApplied}${r2.metaApplied ? ", meta" : ""}).`)
+    } catch (e) {
+      logLine(String(e?.message || "⚠️ serverless /board unreachable"))
+    }
+    $("fit").click()
+    render()
+    resolveHoverOwner(state.hover)
+  })()
 
   pollBoard()
 }
