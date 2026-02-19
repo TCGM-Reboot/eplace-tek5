@@ -36,10 +36,6 @@ function showFatal(err) {
 window.addEventListener("error", (e) => showFatal(e.error || e.message))
 window.addEventListener("unhandledrejection", (e) => {
   const msg = String(e?.reason?.message || e?.reason || "")
-  if (msg.includes("session_paused") || msg.includes("admin_only") || msg.includes("cooldown") || msg.includes("rate")) {
-    console.warn("Non-fatal rejection:", e.reason)
-    return
-  }
   showFatal(e.reason)
 })
 
@@ -377,6 +373,50 @@ async function resetBoardBackend(inDiscord) {
   }))
 
   if (!res.ok) throw new Error(`RESET_BOARD failed: ${res.status} ${JSON.stringify(data)}`)
+  return { data, _client: { reqId, userId, ms } }
+}
+
+async function snapshotBackend(inDiscord, region = null) {
+  const reqId = makeReqId()
+  const userId = await getUserIdForReset(inDiscord)
+
+  const payload = {
+    type: "SNAPSHOT_CREATE",
+    payload: {
+      from: "activity",
+      at: new Date().toISOString(),
+      reqId,
+      userId,
+      region: region || null
+    }
+  }
+
+  console.log(JSON.stringify({ t: new Date().toISOString(), event: "snapshot:request", url: `${GATEWAY_BASE}/proxy`, payload }))
+  const t0 = performance.now()
+
+  const res = await fetch(`${GATEWAY_BASE}/proxy`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  })
+
+  const text = await res.text().catch(() => "")
+  let data = null
+  try { data = text ? JSON.parse(text) : null } catch { data = { raw: text } }
+
+  const ms = Math.round(performance.now() - t0)
+  console.log(JSON.stringify({
+    t: new Date().toISOString(),
+    event: "snapshot:response",
+    status: res.status,
+    ok: res.ok,
+    ms,
+    reqId,
+    userId: userId || null,
+    data
+  }))
+
+  if (!res.ok) throw new Error(`SNAPSHOT_CREATE failed: ${res.status} ${JSON.stringify(data)}`)
   return { data, _client: { reqId, userId, ms } }
 }
 
@@ -1060,10 +1100,6 @@ async function run() {
   }
 
   $("reset").onclick = async () => {
-    if (!window.__isAdmin) {
-      logLine("admin_only")
-      return
-    }
 
     const b = $("reset")
     const prev = b ? b.textContent : "Reset"
@@ -1104,6 +1140,30 @@ async function run() {
       if (b) {
         b.disabled = false
         b.textContent = prev
+      }
+    }
+  }
+
+  const snapBtn = $("snapshot")
+  if (snapBtn) {
+    snapBtn.onclick = async () => {
+
+      const prev = snapBtn.textContent
+      snapBtn.disabled = true
+      snapBtn.textContent = "Snapshotting..."
+
+      try {
+        console.log(JSON.stringify({ t: new Date().toISOString(), event: "snapshot:ui_click", inDiscord }))
+        logLine("⏳ Creating snapshot...")
+        const rr = await snapshotBackend(inDiscord, null)
+        console.log(JSON.stringify({ t: new Date().toISOString(), event: "snapshot:proxy_ok", rr }))
+        logLine("✅ Snapshot requested.")
+      } catch (e) {
+        console.log(JSON.stringify({ t: new Date().toISOString(), event: "snapshot:error", msg: String(e?.message || e), err: String(e?.stack || e) }))
+        logLine(String(e?.message || e))
+      } finally {
+        snapBtn.disabled = false
+        snapBtn.textContent = prev
       }
     }
   }
