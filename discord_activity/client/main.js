@@ -1,7 +1,7 @@
 import "./style.css"
 import { DiscordSDK } from "@discord/embedded-app-sdk"
 
-console.log("MAIN.JS VERSION = BOARD_V1", new Date().toISOString())
+console.log("MAIN.JS VERSION = BOARD_V2_SERVERLESS_RELOAD", new Date().toISOString())
 
 const GATEWAY_BASE = "https://1224715390362324992.discordsays.com/gcp"
 
@@ -226,16 +226,6 @@ function setUserSlotState(state) {
   slot.appendChild(wrap)
 }
 
-async function checkIsAdmin() {
-  const r = await fetch("/api/user/isAdmin", {
-    method: "GET",
-    credentials: "include",
-  })
-
-  if (!r.ok) throw new Error(`isAdmin failed: ${r.status}`)
-  return r.json()
-}
-
 async function loginDiscordActivity() {
   console.log(JSON.stringify({ t: new Date().toISOString(), event: "login_start", href: location.href, origin: location.origin, search: location.search }))
   const cfg = await api("/api/auth/config")
@@ -359,14 +349,12 @@ async function placePixelBackend(inDiscord, x, y, colorHexOrInt) {
         from: "activity",
         at: new Date().toISOString(),
         reqId,
-
         userId: user?.id,
         username:
           user?.username ??
           user?.global_name ??
           user?.displayName ??
           null,
-
         x,
         y,
         color
@@ -382,7 +370,7 @@ async function placePixelBackend(inDiscord, x, y, colorHexOrInt) {
   return data
 }
 
-async function getBoardBackend(inDiscord, since, limit = 200, pageToken = null) {
+async function getBoardBackend(inDiscord, since, limit = 200, pageToken = null, extra = {}) {
   const reqId = makeReqId()
   const user = await getUserForPayload(inDiscord)
 
@@ -390,6 +378,10 @@ async function getBoardBackend(inDiscord, since, limit = 200, pageToken = null) 
   if (since != null) url.searchParams.set("since", String(since))
   if (limit != null) url.searchParams.set("limit", String(limit))
   if (pageToken) url.searchParams.set("pageToken", String(pageToken))
+  for (const [k, v] of Object.entries(extra || {})) {
+    if (v === undefined || v === null) continue
+    url.searchParams.set(k, String(v))
+  }
 
   const res = await fetch(url.toString(), {
     method: "GET",
@@ -406,6 +398,28 @@ async function getBoardBackend(inDiscord, since, limit = 200, pageToken = null) 
 
   if (!res.ok) throw new Error(`GET_BOARD failed: ${res.status} ${JSON.stringify(data)}`)
   return { ...data, _client: { reqId, at: new Date().toISOString(), user } }
+}
+
+function b64ToBytes(b64) {
+  const bin = atob(String(b64 || ""))
+  const out = new Uint8Array(bin.length)
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i)
+  return out
+}
+
+async function gunzipBytes(bytes) {
+  if (!bytes || !bytes.length) return new Uint8Array(0)
+  if (typeof DecompressionStream === "undefined") throw new Error("gzip_not_supported")
+  const ds = new DecompressionStream("gzip")
+  const stream = new Blob([bytes]).stream().pipeThrough(ds)
+  const ab = await new Response(stream).arrayBuffer()
+  return new Uint8Array(ab)
+}
+
+function guessSquareSize(n) {
+  const s = Math.floor(Math.sqrt(Math.max(0, n)))
+  if (s * s === n) return s
+  return null
 }
 
 async function run() {
@@ -598,6 +612,7 @@ async function run() {
   const state = { selectedColor: 2, hover: null, isDragging: false, dragStart: null }
 
   let board = { w: 100, h: 100, pixels: new Uint8Array(100 * 100), colors: 16, cooldownMs: 10000 }
+  let chunkSize = 10
 
   const canvas = $("cv")
   const ctx = canvas.getContext("2d", { alpha: false })
@@ -649,16 +664,83 @@ async function run() {
     board.pixels[y * board.w + x] = colorId
   }
 
-  async function loadBoard() {
-    const res = await fetch("/api/board", { credentials: "include" })
-    if (!res.ok) throw new Error(`GET /api/board failed (${res.status})`)
-    const data = await res.json()
-    board.w = data.w
-    board.h = data.h
-    board.colors = data.colors
-    board.cooldownMs = data.cooldownMs
-    board.pixels = Uint8Array.from(data.pixels)
-    logLine("✅ Board loaded from server.")
+  function ensureBoardSize(w, h) {
+    const W = Math.max(1, Math.floor(Number(w || 0)))
+    const H = Math.max(1, Math.floor(Number(h || 0)))
+    if (W === board.w && H === board.h && board.pixels?.length === W * H) return
+    board.w = W
+    board.h = H
+    board.pixels = new Uint8Array(W * H)
+    board.pixels.fill(1)
+  }
+
+  function applyChunk(cx, cy, bytes, inferredSize) {
+    const sz = Math.max(1, Math.floor(Number(inferredSize || chunkSize || 1)))
+    const ox = cx * sz
+    const oy = cy * sz
+    const maxW = board.w
+    const maxH = board.h
+    const w = Math.min(sz, Math.max(0, maxW - ox))
+    const h = Math.min(sz, Math.max(0, maxH - oy))
+    if (w <= 0 || h <= 0) return
+    for (let y = 0; y < h; y++) {
+      const srcRow = y * sz
+      const dstRow = (oy + y) * maxW + ox
+      for (let x = 0; x < w; x++) {
+        const v = bytes[srcRow + x]
+        board.pixels[dstRow + x] = (v === undefined ? 1 : v)
+      }
+    }
+  }
+
+  async function loadBoardFromServerlessFull() {
+    const since = new Date(0).toISOString()
+    const limit = 500
+    let pageToken = null
+    let metaApplied = false
+    let any = 0
+
+    const metaExtra = { includeMeta: "true" }
+    while (true) {
+      const data = await getBoardBackend(inDiscord, since, limit, pageToken, metaApplied ? {} : metaExtra)
+      const chunks = Array.isArray(data?.chunks) ? data.chunks : []
+      for (const c of chunks) {
+        if (!metaApplied && c?.metaGzipB64) {
+          const metaBytes = await gunzipBytes(b64ToBytes(c.metaGzipB64))
+          const metaTxt = new TextDecoder().decode(metaBytes)
+          let meta = null
+          try { meta = metaTxt ? JSON.parse(metaTxt) : null } catch { meta = null }
+          if (meta) {
+            if (meta.w && meta.h) ensureBoardSize(meta.w, meta.h)
+            if (meta.colors) board.colors = Number(meta.colors) || board.colors
+            if (meta.cooldownMs) board.cooldownMs = Number(meta.cooldownMs) || board.cooldownMs
+            if (meta.chunkSize) chunkSize = Number(meta.chunkSize) || chunkSize
+            metaApplied = true
+          }
+        }
+
+        if (c?.dataGzipB64) {
+          const bytes = await gunzipBytes(b64ToBytes(c.dataGzipB64))
+          let sz = chunkSize
+          if (!sz || sz <= 0) {
+            const g = guessSquareSize(bytes.length)
+            if (g) sz = g
+          }
+          if (sz && sz > 0) applyChunk(Number(c.cx || 0), Number(c.cy || 0), bytes, sz)
+          any++
+        }
+      }
+
+      pageToken = data?.nextPageToken || null
+      if (!pageToken) break
+    }
+
+    if (!metaApplied) {
+      if (!chunkSize || chunkSize <= 0) chunkSize = 10
+      if (!board?.pixels?.length) ensureBoardSize(board.w || 100, board.h || 100)
+    }
+
+    return { chunksApplied: any, metaApplied }
   }
 
   function render() {
@@ -673,7 +755,7 @@ async function run() {
     const vx0 = clamp(left, 0, board.w - 1)
     const vy0 = clamp(top, 0, board.h - 1)
     const vx1 = clamp(right, 0, board.w - 1)
-    const vy1 = clamp(bottom, 0, board.w - 1)
+    const vy1 = clamp(bottom, 0, board.h - 1)
 
     for (let y = vy0; y <= vy1; y++) {
       for (let x = vx0; x <= vx1; x++) {
@@ -738,8 +820,8 @@ async function run() {
     if (!p) return
 
     try {
-      const r = await placePixelBackend(inDiscord, p.x, p.y, palette[state.selectedColor])
-      if (r?.ok) logLine(`🟦 Placed pixel @ ${p.x},${p.y} color=${state.selectedColor}`)
+      const rr = await placePixelBackend(inDiscord, p.x, p.y, palette[state.selectedColor])
+      if (rr?.ok) logLine(`🟦 Placed pixel @ ${p.x},${p.y} color=${state.selectedColor}`)
       setColorAt(p.x, p.y, state.selectedColor)
     } catch (err) {
       logLine(String(err?.message || err))
@@ -784,11 +866,24 @@ async function run() {
   }
 
   $("reload").onclick = async () => {
+    const b = $("reload")
+    if (b) {
+      b.disabled = true
+      b.textContent = "Reloading..."
+    }
     try {
-      await loadBoard()
+      logLine("⏳ Reloading board from serverless...")
+      const r2 = await loadBoardFromServerlessFull()
+      logLine(`✅ Board reloaded (chunks=${r2.chunksApplied}${r2.metaApplied ? ", meta" : ""}).`)
+      $("fit").click()
       render()
     } catch (e) {
       showFatal(e)
+    } finally {
+      if (b) {
+        b.disabled = false
+        b.textContent = "Reload board"
+      }
     }
   }
 
@@ -802,9 +897,11 @@ async function run() {
 
   ;(async () => {
     try {
-      await loadBoard()
+      logLine("⏳ Loading board from serverless...")
+      const r2 = await loadBoardFromServerlessFull()
+      logLine(`✅ Board loaded (chunks=${r2.chunksApplied}${r2.metaApplied ? ", meta" : ""}).`)
     } catch (e) {
-      logLine(String(e?.message || "⚠️ /api/board unreachable. Start server + Vite proxy."))
+      logLine(String(e?.message || "⚠️ serverless /board unreachable"))
     }
     $("fit").click()
     render()
@@ -813,6 +910,19 @@ async function run() {
   let lastSince = new Date(0).toISOString()
   let polling = false
 
+  async function applyUpdateChunks(chunks) {
+    for (const c of chunks) {
+      if (!c?.dataGzipB64) continue
+      const bytes = await gunzipBytes(b64ToBytes(c.dataGzipB64))
+      let sz = chunkSize
+      if (!sz || sz <= 0) {
+        const g = guessSquareSize(bytes.length)
+        if (g) sz = g
+      }
+      if (sz && sz > 0) applyChunk(Number(c.cx || 0), Number(c.cy || 0), bytes, sz)
+    }
+  }
+
   async function pollBoard() {
     if (polling) return
     polling = true
@@ -820,10 +930,15 @@ async function run() {
       try {
         let pageToken = null
         let maxUpdatedAt = lastSince
+        let changed = false
 
         do {
           const data = await getBoardBackend(inDiscord, lastSince, 200, pageToken)
           const chunks = Array.isArray(data?.chunks) ? data.chunks : []
+          if (chunks.length) {
+            await applyUpdateChunks(chunks)
+            changed = true
+          }
           for (const c of chunks) {
             if (c?.updatedAt && String(c.updatedAt) > String(maxUpdatedAt)) maxUpdatedAt = String(c.updatedAt)
           }
@@ -831,6 +946,7 @@ async function run() {
         } while (pageToken)
 
         lastSince = maxUpdatedAt
+        if (changed) render()
       } catch (e) {
         console.error(e)
       }
