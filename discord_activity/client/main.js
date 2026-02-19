@@ -1,9 +1,9 @@
 import "./style.css"
 import { DiscordSDK } from "@discord/embedded-app-sdk"
 
-console.log("MAIN.JS VERSION = BOARD_V4_CSP_SELF_PROXY", new Date().toISOString())
+console.log("MAIN.JS VERSION = BOARD_V1", new Date().toISOString())
 
-const PROXY_PATH = "/proxy"
+const GATEWAY_BASE = "https://1224715390362324992.discordsays.com/gcp"
 
 function escapeHtml(s) {
   return String(s)
@@ -226,6 +226,16 @@ function setUserSlotState(state) {
   slot.appendChild(wrap)
 }
 
+async function checkIsAdmin() {
+  const r = await fetch("/api/user/isAdmin", {
+    method: "GET",
+    credentials: "include",
+  })
+
+  if (!r.ok) throw new Error(`isAdmin failed: ${r.status}`)
+  return r.json()
+}
+
 async function loginDiscordActivity() {
   console.log(JSON.stringify({ t: new Date().toISOString(), event: "login_start", href: location.href, origin: location.origin, search: location.search }))
   const cfg = await api("/api/auth/config")
@@ -313,22 +323,53 @@ async function getUserForPayload(inDiscord) {
   return { id: u.id, username: u.username || "", avatar: u.avatar || "" }
 }
 
-async function proxyCall(inDiscord, type, payload = {}) {
+async function pingBackend(inDiscord) {
   const reqId = makeReqId()
   const user = await getUserForPayload(inDiscord)
 
-  const res = await fetch(PROXY_PATH, {
+  const res = await fetch(`${GATEWAY_BASE}/proxy`, {
     method: "POST",
-    credentials: "include",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      type,
+      type: "PING",
       payload: {
         from: "activity",
         at: new Date().toISOString(),
         reqId,
-        user,
-        ...payload
+        user
+      }
+    })
+  })
+
+  const data = await res.json()
+  return data
+}
+
+async function placePixelBackend(inDiscord, x, y, colorHexOrInt) {
+  const reqId = makeReqId()
+  const user = await getUserForPayload(inDiscord)
+  const color = hexToIntColor(colorHexOrInt)
+
+  const res = await fetch(`${GATEWAY_BASE}/proxy`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      type: "PLACE_PIXEL",
+      payload: {
+        from: "activity",
+        at: new Date().toISOString(),
+        reqId,
+
+        userId: user?.id,
+        username:
+          user?.username ??
+          user?.global_name ??
+          user?.displayName ??
+          null,
+
+        x,
+        y,
+        color
       }
     })
   })
@@ -337,67 +378,34 @@ async function proxyCall(inDiscord, type, payload = {}) {
   let data = null
   try { data = text ? JSON.parse(text) : null } catch { data = { raw: text } }
 
-  if (!res.ok) throw new Error(`${type} failed: ${res.status} ${JSON.stringify(data)}`)
+  if (!res.ok) throw new Error(`PLACE_PIXEL failed: ${res.status} ${JSON.stringify(data)}`)
   return data
 }
 
-async function pingBackend(inDiscord) {
-  return proxyCall(inDiscord, "PING", {})
-}
+async function getBoardBackend(inDiscord, since, limit = 200, pageToken = null) {
+  const reqId = makeReqId()
+  const user = await getUserForPayload(inDiscord)
 
-async function placePixelBackend(inDiscord, x, y, colorHexOrInt) {
-  const color = hexToIntColor(colorHexOrInt)
-  return proxyCall(inDiscord, "PLACE_PIXEL", { x, y, color })
-}
+  const url = new URL(`${GATEWAY_BASE}/board`)
+  if (since != null) url.searchParams.set("since", String(since))
+  if (limit != null) url.searchParams.set("limit", String(limit))
+  if (pageToken) url.searchParams.set("pageToken", String(pageToken))
 
-async function adminStartBackend(inDiscord) {
-  return proxyCall(inDiscord, "ADMIN_START", {})
-}
+  const res = await fetch(url.toString(), {
+    method: "GET",
+    headers: {
+      "X-Client-ReqId": reqId,
+      "X-Client-At": new Date().toISOString(),
+      ...(user?.id ? { "X-User-Id": user.id } : {})
+    }
+  })
 
-async function adminPauseBackend(inDiscord) {
-  return proxyCall(inDiscord, "ADMIN_PAUSE", {})
-}
+  const text = await res.text().catch(() => "")
+  let data = null
+  try { data = text ? JSON.parse(text) : null } catch { data = { raw: text } }
 
-async function adminResetSessionBackend(inDiscord) {
-  return proxyCall(inDiscord, "ADMIN_RESET_SESSION", {})
-}
-
-async function adminSnapshotBackend(inDiscord) {
-  return proxyCall(inDiscord, "ADMIN_SNAPSHOT", {})
-}
-
-function b64ToBytes(b64) {
-  const bin = atob(String(b64 || ""))
-  const out = new Uint8Array(bin.length)
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i)
-  return out
-}
-
-async function gunzipBytes(bytes) {
-  const ds = new DecompressionStream("gzip")
-  const stream = new Blob([bytes]).stream().pipeThrough(ds)
-  const ab = await new Response(stream).arrayBuffer()
-  return new Uint8Array(ab)
-}
-
-async function decodeGzipB64ToJson(b64) {
-  if (!b64) return null
-  const raw = b64ToBytes(b64)
-  const unz = await gunzipBytes(raw)
-  const txt = new TextDecoder().decode(unz)
-  return JSON.parse(txt)
-}
-
-async function decodeGzipB64ToBytes(b64) {
-  if (!b64) return null
-  const raw = b64ToBytes(b64)
-  const unz = await gunzipBytes(raw)
-  return unz
-}
-
-async function getBoardServerlessViaProxy(since, limit = 200, pageToken = null, extra = {}) {
-  const payload = { since, limit, pageToken, ...extra }
-  return proxyCall(false, "GET_BOARD", payload)
+  if (!res.ok) throw new Error(`GET_BOARD failed: ${res.status} ${JSON.stringify(data)}`)
+  return { ...data, _client: { reqId, at: new Date().toISOString(), user } }
 }
 
 async function run() {
@@ -469,26 +477,28 @@ async function run() {
   `
 
   const inDiscord = isProbablyDiscordActivity()
+
   const $ = (id) => document.getElementById(id)
   const logLine = (msg) => { $("status").textContent = msg }
 
-  const pingBtn = document.getElementById("ping-btn")
-  const pingOut = document.getElementById("ping-output")
+  const btn = document.getElementById("ping-btn")
+  const out = document.getElementById("ping-output")
 
-  if (pingBtn && pingOut) {
-    pingBtn.addEventListener("click", async () => {
-      pingBtn.disabled = true
-      pingBtn.textContent = "Ping..."
-      pingOut.textContent = ""
+  if (btn && out) {
+    btn.addEventListener("click", async () => {
+      btn.disabled = true
+      btn.textContent = "Ping..."
+      out.textContent = ""
+
       try {
         const data = await pingBackend(inDiscord)
-        pingOut.textContent = JSON.stringify(data, null, 2)
+        out.textContent = JSON.stringify(data, null, 2)
       } catch (err) {
         console.error(err)
-        pingOut.textContent = `Erreur: ${err?.message ?? String(err)}`
+        out.textContent = `Erreur: ${err?.message ?? String(err)}`
       } finally {
-        pingBtn.disabled = false
-        pingBtn.textContent = "Ping Backend"
+        btn.disabled = false
+        btn.textContent = "Ping Backend"
       }
     })
   }
@@ -510,12 +520,14 @@ async function run() {
 
   function applyRoleUI(isAdmin) {
     window.__canPlace = true
+
     setHidden("reload", false)
     setHidden("start", !isAdmin)
     setHidden("pause", !isAdmin)
     setHidden("resetSession", !isAdmin)
     setHidden("snapshot", !isAdmin)
     setHidden("clear", !isAdmin)
+
     const brand = document.querySelector(".brandTitle")
     if (brand) brand.textContent = isAdmin ? "r/place viewer (ADMIN)" : "r/place viewer"
   }
@@ -572,6 +584,8 @@ async function run() {
   const r = await apiWithUser("/api/user/isAdmin")
   const isAdmin = Boolean(r.data?.isAdmin)
 
+  console.log("isAdmin =", isAdmin)
+
   window.__isAdmin = isAdmin
   applyRoleUI(isAdmin)
 
@@ -584,8 +598,6 @@ async function run() {
   const state = { selectedColor: 2, hover: null, isDragging: false, dragStart: null }
 
   let board = { w: 100, h: 100, pixels: new Uint8Array(100 * 100), colors: 16, cooldownMs: 10000 }
-  let chunkW = 10
-  let chunkH = 10
 
   const canvas = $("cv")
   const ctx = canvas.getContext("2d", { alpha: false })
@@ -637,99 +649,16 @@ async function run() {
     board.pixels[y * board.w + x] = colorId
   }
 
-  function ensureBoardSize(w, h) {
-    const W = Math.max(1, Math.floor(Number(w || 0)))
-    const H = Math.max(1, Math.floor(Number(h || 0)))
-    if (W === board.w && H === board.h && board.pixels?.length === W * H) return
-    board.w = W
-    board.h = H
-    board.pixels = new Uint8Array(W * H)
-    board.pixels.fill(1)
-  }
-
-  function applyMeta(meta) {
-    if (!meta) return
-    const m = meta.board || meta
-    const w = Number(m.w ?? m.width ?? board.w)
-    const h = Number(m.h ?? m.height ?? board.h)
-    const colors = Number(m.colors ?? board.colors)
-    const cooldownMs = Number(m.cooldownMs ?? board.cooldownMs)
-    const cw = Number(m.chunkW ?? m.chunkWidth ?? m.chunkSize ?? chunkW)
-    const ch = Number(m.chunkH ?? m.chunkHeight ?? m.chunkSize ?? chunkH)
-    if (Number.isFinite(w) && Number.isFinite(h)) ensureBoardSize(w, h)
-    if (Number.isFinite(colors)) board.colors = colors
-    if (Number.isFinite(cooldownMs)) board.cooldownMs = cooldownMs
-    if (Number.isFinite(cw) && cw > 0) chunkW = Math.floor(cw)
-    if (Number.isFinite(ch) && ch > 0) chunkH = Math.floor(ch)
-  }
-
-  function putChunkBytes(cx, cy, bytes) {
-    if (!Number.isFinite(cx) || !Number.isFinite(cy)) return
-    const ox = cx * chunkW
-    const oy = cy * chunkH
-    const w = chunkW
-    const h = chunkH
-    for (let y = 0; y < h; y++) {
-      for (let x = 0; x < w; x++) {
-        const bi = y * w + x
-        const v = bytes[bi]
-        const tx = ox + x
-        const ty = oy + y
-        if (tx < 0 || ty < 0 || tx >= board.w || ty >= board.h) continue
-        board.pixels[ty * board.w + tx] = v
-      }
-    }
-  }
-
-  async function applyChunkFromServerless(c) {
-    if (!c) return
-    const cx = Number(c.cx)
-    const cy = Number(c.cy)
-
-    if (c.metaGzipB64) {
-      try {
-        const meta = await decodeGzipB64ToJson(c.metaGzipB64)
-        applyMeta(meta)
-      } catch {}
-    }
-
-    if (!c.dataGzipB64) return
-
-    try {
-      const j = await decodeGzipB64ToJson(c.dataGzipB64)
-      const px = j?.pixels ?? j?.data ?? j?.chunk?.pixels
-      if (Array.isArray(px) || (px && typeof px.length === "number")) {
-        const arr = px instanceof Uint8Array ? px : Uint8Array.from(px)
-        putChunkBytes(cx, cy, arr)
-        return
-      }
-    } catch {}
-
-    try {
-      const bytes = await decodeGzipB64ToBytes(c.dataGzipB64)
-      if (bytes && bytes.length) {
-        putChunkBytes(cx, cy, bytes)
-        return
-      }
-    } catch {}
-  }
-
-  async function loadBoardFullViaProxy() {
-    let pageToken = null
-    let gotMeta = false
-    let total = 0
-    do {
-      const data = await getBoardServerlessViaProxy(null, 200, pageToken, gotMeta ? {} : { includeMeta: "true" })
-      const chunks = Array.isArray(data?.chunks) ? data.chunks : []
-      for (const c of chunks) {
-        if (!gotMeta && c?.metaGzipB64) gotMeta = true
-        await applyChunkFromServerless(c)
-        total++
-      }
-      pageToken = data?.nextPageToken || null
-    } while (pageToken)
-
-    logLine(`✅ Board loaded via ${PROXY_PATH} (${total} chunks).`)
+  async function loadBoard() {
+    const res = await fetch("/api/board", { credentials: "include" })
+    if (!res.ok) throw new Error(`GET /api/board failed (${res.status})`)
+    const data = await res.json()
+    board.w = data.w
+    board.h = data.h
+    board.colors = data.colors
+    board.cooldownMs = data.cooldownMs
+    board.pixels = Uint8Array.from(data.pixels)
+    logLine("✅ Board loaded from server.")
   }
 
   function render() {
@@ -744,7 +673,7 @@ async function run() {
     const vx0 = clamp(left, 0, board.w - 1)
     const vy0 = clamp(top, 0, board.h - 1)
     const vx1 = clamp(right, 0, board.w - 1)
-    const vy1 = clamp(bottom, 0, board.h - 1)
+    const vy1 = clamp(bottom, 0, board.w - 1)
 
     for (let y = vy0; y <= vy1; y++) {
       for (let x = vx0; x <= vx1; x++) {
@@ -810,7 +739,7 @@ async function run() {
 
     try {
       const r = await placePixelBackend(inDiscord, p.x, p.y, palette[state.selectedColor])
-      if (r?.ok || r?.success) logLine(`🟦 Placed pixel @ ${p.x},${p.y} color=${state.selectedColor}`)
+      if (r?.ok) logLine(`🟦 Placed pixel @ ${p.x},${p.y} color=${state.selectedColor}`)
       setColorAt(p.x, p.y, state.selectedColor)
     } catch (err) {
       logLine(String(err?.message || err))
@@ -854,89 +783,28 @@ async function run() {
     render()
   }
 
-  async function withBtn(btnId, busyText, fn) {
-    const b = $(btnId)
-    if (!b) return
-    const prev = b.textContent
-    b.disabled = true
-    b.textContent = busyText
-    try {
-      const r = await fn()
-      return r
-    } finally {
-      b.disabled = false
-      b.textContent = prev
-    }
-  }
-
   $("reload").onclick = async () => {
     try {
-      await withBtn("reload", "Reloading...", async () => {
-        await loadBoardFullViaProxy()
-        render()
-      })
+      await loadBoard()
+      render()
     } catch (e) {
       showFatal(e)
     }
   }
 
-  $("clear").onclick = async () => {
+  $("clear").onclick = () => {
     board.pixels.fill(1)
     logLine("🧹 Cleared locally.")
     render()
-  }
-
-  $("start").onclick = async () => {
-    try {
-      await withBtn("start", "Starting...", async () => {
-        await adminStartBackend(inDiscord)
-        logLine("✅ Started.")
-      })
-    } catch (e) {
-      logLine(String(e?.message || e))
-    }
-  }
-
-  $("pause").onclick = async () => {
-    try {
-      await withBtn("pause", "Pausing...", async () => {
-        await adminPauseBackend(inDiscord)
-        logLine("⏸️ Paused.")
-      })
-    } catch (e) {
-      logLine(String(e?.message || e))
-    }
-  }
-
-  $("resetSession").onclick = async () => {
-    try {
-      await withBtn("resetSession", "Resetting...", async () => {
-        await adminResetSessionBackend(inDiscord)
-        logLine("♻️ Session reset.")
-      })
-    } catch (e) {
-      logLine(String(e?.message || e))
-    }
-  }
-
-  $("snapshot").onclick = async () => {
-    try {
-      await withBtn("snapshot", "Snapshot...", async () => {
-        await adminSnapshotBackend(inDiscord)
-        logLine("📸 Snapshot done.")
-      })
-    } catch (e) {
-      logLine(String(e?.message || e))
-    }
   }
 
   buildPalette()
 
   ;(async () => {
     try {
-      await loadBoardFullViaProxy()
+      await loadBoard()
     } catch (e) {
-      logLine(String(e?.message || `⚠️ ${PROXY_PATH} unreachable.`))
+      logLine(String(e?.message || "⚠️ /api/board unreachable. Start server + Vite proxy."))
     }
     $("fit").click()
     render()
@@ -952,21 +820,17 @@ async function run() {
       try {
         let pageToken = null
         let maxUpdatedAt = lastSince
-        let appliedAny = false
 
         do {
-          const data = await getBoardServerlessViaProxy(lastSince, 200, pageToken, {})
+          const data = await getBoardBackend(inDiscord, lastSince, 200, pageToken)
           const chunks = Array.isArray(data?.chunks) ? data.chunks : []
           for (const c of chunks) {
             if (c?.updatedAt && String(c.updatedAt) > String(maxUpdatedAt)) maxUpdatedAt = String(c.updatedAt)
-            await applyChunkFromServerless(c)
-            appliedAny = true
           }
           pageToken = data?.nextPageToken || null
         } while (pageToken)
 
-        if (maxUpdatedAt !== lastSince) lastSince = maxUpdatedAt
-        if (appliedAny) render()
+        lastSince = maxUpdatedAt
       } catch (e) {
         console.error(e)
       }
