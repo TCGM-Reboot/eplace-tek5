@@ -363,6 +363,17 @@ async function resetBoardBackend(inDiscord) {
   return data
 }
 
+async function waitForChunksCleared(inDiscord, tries = 80, delayMs = 500) {
+  const since = new Date(0).toISOString()
+  for (let i = 0; i < tries; i++) {
+    const data = await getBoardBackend(inDiscord, since, 1, null, { includeMeta: "false", includePixelMeta: "false" })
+    const chunks = Array.isArray(data?.chunks) ? data.chunks : []
+    if (chunks.length === 0) return true
+    await new Promise((r) => setTimeout(r, delayMs))
+  }
+  return false
+}
+
 async function placePixelBackend(inDiscord, x, y, colorHexOrInt) {
   const reqId = makeReqId()
   const user = await getUserForPayload(inDiscord)
@@ -1069,9 +1080,48 @@ async function run() {
     board.pixels.fill(1)
     board.metaHash.fill(0)
     board.metaTs.fill(0)
+    userHashCache.clear()
     logLine("🧹 Cleared locally.")
     render()
     resolveHoverOwner(state.hover)
+  }
+
+  const resetBtn = $("resetSession")
+  if (resetBtn) {
+    resetBtn.onclick = async () => {
+      if (!window.__isAdmin) {
+        logLine("admin_only")
+        return
+      }
+      const prevText = resetBtn.textContent
+      resetBtn.disabled = true
+      resetBtn.textContent = "Resetting..."
+      try {
+        logLine("⏳ Resetting board (deleting ALL chunks)...")
+        await resetBoardBackend(inDiscord)
+
+        board.pixels.fill(1)
+        board.metaHash.fill(0)
+        board.metaTs.fill(0)
+        userHashCache.clear()
+        lastSince = new Date(0).toISOString()
+
+        logLine("⏳ Waiting for chunks deletion to complete...")
+        await waitForChunksCleared(inDiscord, 80, 500)
+
+        logLine("⏳ Reloading board after reset...")
+        const r2 = await loadBoardFromServerlessFull()
+        logLine(`✅ Board reset (chunks=${r2.chunksApplied}${r2.metaApplied ? ", meta" : ""}).`)
+        $("fit").click()
+        render()
+        resolveHoverOwner(state.hover)
+      } catch (e) {
+        logLine(String(e?.message || e))
+      } finally {
+        resetBtn.disabled = false
+        resetBtn.textContent = prevText
+      }
+    }
   }
 
   buildPalette()
@@ -1152,38 +1202,6 @@ async function run() {
         console.error(e)
       }
       await new Promise((r) => setTimeout(r, 1000))
-    }
-  }
-
-  const resetBtn = $("resetSession")
-  if (resetBtn) {
-    resetBtn.onclick = async () => {
-      if (!window.__isAdmin) {
-        logLine("admin_only")
-        return
-      }
-      const prevText = resetBtn.textContent
-      resetBtn.disabled = true
-      resetBtn.textContent = "Resetting..."
-      try {
-        logLine("⏳ Resetting board...")
-        await resetBoardBackend(inDiscord)
-        board.pixels.fill(1)
-        board.metaHash.fill(0)
-        board.metaTs.fill(0)
-        lastSince = new Date(0).toISOString()
-        logLine("⏳ Reloading board after reset...")
-        const r2 = await loadBoardFromServerlessFull()
-        logLine(`✅ Board reset (chunks=${r2.chunksApplied}${r2.metaApplied ? ", meta" : ""}).`)
-        $("fit").click()
-        render()
-        resolveHoverOwner(state.hover)
-      } catch (e) {
-        logLine(String(e?.message || e))
-      } finally {
-        resetBtn.disabled = false
-        resetBtn.textContent = prevText
-      }
     }
   }
 
