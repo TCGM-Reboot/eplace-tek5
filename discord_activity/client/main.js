@@ -589,13 +589,15 @@ async function run() {
             <button class="btn" id="ping-btn" type="button">Ping Backend</button>
             <pre id="ping-output" style="white-space: pre-wrap;"></pre>
           </div>
+
           <div class="row">
             <button class="btn" id="start">Start</button>
             <button class="btn" id="pause">Pause</button>
             <button class="btn" id="resetSession">Reset</button>
           </div>
+
           <div class="row">
-            <button class="btn" id="snapshot">Snapshot</button>
+            <button class="btn" id="snapshot">Take snapshot</button>
           </div>
 
           <div id="status" class="status"></div>
@@ -1103,83 +1105,6 @@ async function run() {
     render()
   }
 
-  $("reset").onclick = async () => {
-    if (!window.__isAdmin) {
-      logLine("admin_only")
-      return
-    }
-
-    const b = $("reset")
-    const prev = b ? b.textContent : "Reset"
-    if (b) {
-      b.disabled = true
-      b.textContent = "Resetting..."
-    }
-
-    try {
-      console.log(JSON.stringify({ t: new Date().toISOString(), event: "reset:ui_click", inDiscord }))
-      logLine("⏳ Resetting board (deleting ALL chunks)...")
-      const rr = await resetBoardBackend(inDiscord)
-      console.log(JSON.stringify({ t: new Date().toISOString(), event: "reset:proxy_ok", rr }))
-
-      clearBoardLocal()
-      lastSince = new Date(0).toISOString()
-      console.log(JSON.stringify({ t: new Date().toISOString(), event: "reset:local_cleared", lastSince }))
-
-      logLine("⏳ Reloading board after reset...")
-      const t0 = performance.now()
-      const r2 = await loadBoardFromServerlessFull()
-      console.log(JSON.stringify({
-        t: new Date().toISOString(),
-        event: "reset:reload_done",
-        ms: Math.round(performance.now() - t0),
-        chunksApplied: r2.chunksApplied,
-        metaApplied: r2.metaApplied
-      }))
-
-      logLine(`✅ Board reset (chunks=${r2.chunksApplied}${r2.metaApplied ? ", meta" : ""}).`)
-      $("fit").click()
-      render()
-      resolveHoverOwner(state.hover)
-    } catch (e) {
-      console.log(JSON.stringify({ t: new Date().toISOString(), event: "reset:error", msg: String(e?.message || e), err: String(e?.stack || e) }))
-      logLine(String(e?.message || e))
-    } finally {
-      if (b) {
-        b.disabled = false
-        b.textContent = prev
-      }
-    }
-  }
-
-  const snapBtn = $("snapshot")
-  if (snapBtn) {
-    snapBtn.onclick = async () => {
-      if (!window.__isAdmin) {
-        logLine("admin_only")
-        return
-      }
-
-      const prev = snapBtn.textContent
-      snapBtn.disabled = true
-      snapBtn.textContent = "Snapshotting..."
-
-      try {
-        console.log(JSON.stringify({ t: new Date().toISOString(), event: "snapshot:ui_click", inDiscord }))
-        logLine("⏳ Creating snapshot...")
-        const rr = await snapshotBackend(inDiscord, null)
-        console.log(JSON.stringify({ t: new Date().toISOString(), event: "snapshot:proxy_ok", rr }))
-        logLine("✅ Snapshot requested.")
-      } catch (e) {
-        console.log(JSON.stringify({ t: new Date().toISOString(), event: "snapshot:error", msg: String(e?.message || e), err: String(e?.stack || e) }))
-        logLine(String(e?.message || e))
-      } finally {
-        snapBtn.disabled = false
-        snapBtn.textContent = prev
-      }
-    }
-  }
-
   let lastSince = new Date(0).toISOString()
   let polling = false
 
@@ -1211,6 +1136,160 @@ async function run() {
       }
     }
   }
+
+  async function reloadBoardFromServerless() {
+    logLine("⏳ Reloading board from serverless...")
+    clearBoardLocal()
+    lastSince = new Date(0).toISOString()
+    const r2 = await loadBoardFromServerlessFull()
+    logLine(`✅ Board reloaded (chunks=${r2.chunksApplied}${r2.metaApplied ? ", meta" : ""}).`)
+    $("fit").click()
+    render()
+    resolveHoverOwner(state.hover)
+  }
+
+  $("reload").onclick = async () => {
+    const b = $("reload")
+    if (b) {
+      b.disabled = true
+      b.textContent = "Reloading..."
+    }
+    try {
+      await reloadBoardFromServerless()
+    } catch (e) {
+      showFatal(e)
+    } finally {
+      if (b) {
+        b.disabled = false
+        b.textContent = "Reload board"
+      }
+    }
+  }
+
+  $("reset").onclick = async () => {
+    if (!window.__isAdmin) {
+      logLine("admin_only")
+      return
+    }
+
+    const b = $("reset")
+    const prev = b ? b.textContent : "Reset"
+    if (b) {
+      b.disabled = true
+      b.textContent = "Resetting..."
+    }
+
+    try {
+      console.log(JSON.stringify({ t: new Date().toISOString(), event: "reset:ui_click", inDiscord }))
+      logLine("⏳ Resetting board (deleting ALL chunks)...")
+      await resetBoardBackend(inDiscord)
+      await reloadBoardFromServerless()
+      logLine("✅ Board reset.")
+    } catch (e) {
+      console.log(JSON.stringify({ t: new Date().toISOString(), event: "reset:error", msg: String(e?.message || e), err: String(e?.stack || e) }))
+      logLine(String(e?.message || e))
+    } finally {
+      if (b) {
+        b.disabled = false
+        b.textContent = prev
+      }
+    }
+  }
+
+  const snapBtn = $("snapshot")
+  if (snapBtn) {
+    snapBtn.onclick = async () => {
+      if (!window.__isAdmin) {
+        logLine("admin_only")
+        return
+      }
+
+      const prev = snapBtn.textContent
+      snapBtn.disabled = true
+      snapBtn.textContent = "Snapshotting..."
+
+      try {
+        console.log(JSON.stringify({ t: new Date().toISOString(), event: "snapshot:ui_click", inDiscord }))
+        logLine("⏳ Creating snapshot...")
+        await snapshotBackend(inDiscord, null)
+        logLine("✅ Snapshot requested.")
+      } catch (e) {
+        console.log(JSON.stringify({ t: new Date().toISOString(), event: "snapshot:error", msg: String(e?.message || e), err: String(e?.stack || e) }))
+        logLine(String(e?.message || e))
+      } finally {
+        snapBtn.disabled = false
+        snapBtn.textContent = prev
+      }
+    }
+  }
+
+  $("clear").onclick = () => {
+    clearBoardLocal()
+    logLine("🧹 Cleared locally.")
+    render()
+    resolveHoverOwner(state.hover)
+  }
+
+  const resetSessionBtn = $("resetSession")
+  if (resetSessionBtn) {
+    resetSessionBtn.onclick = async () => {
+      if (!window.__isAdmin) {
+        logLine("admin_only")
+        return
+      }
+      const prevText = resetSessionBtn.textContent
+      resetSessionBtn.disabled = true
+      resetSessionBtn.textContent = "Resetting..."
+      try {
+        console.log(JSON.stringify({ t: new Date().toISOString(), event: "resetSession:ui_click", inDiscord }))
+        logLine("⏳ Resetting board (deleting ALL chunks)...")
+        await resetBoardBackend(inDiscord)
+        await reloadBoardFromServerless()
+        logLine("✅ Board reset.")
+      } catch (e) {
+        console.log(JSON.stringify({ t: new Date().toISOString(), event: "resetSession:error", msg: String(e?.message || e), err: String(e?.stack || e) }))
+        logLine(String(e?.message || e))
+      } finally {
+        resetSessionBtn.disabled = false
+        resetSessionBtn.textContent = prevText
+      }
+    }
+  }
+
+  const pingBtn = document.getElementById("ping-btn")
+  const pingOut = document.getElementById("ping-output")
+
+  if (pingBtn && pingOut) {
+    pingBtn.addEventListener("click", async () => {
+      pingBtn.disabled = true
+      pingBtn.textContent = "Ping..."
+      pingOut.textContent = ""
+      try {
+        const data = await pingBackend(inDiscord)
+        pingOut.textContent = JSON.stringify(data, null, 2)
+      } catch (err) {
+        console.error(err)
+        pingOut.textContent = `Erreur: ${err?.message ?? String(err)}`
+      } finally {
+        pingBtn.disabled = false
+        pingBtn.textContent = "Ping Backend"
+      }
+    })
+  }
+
+  buildPalette()
+
+  ;(async () => {
+    try {
+      logLine("⏳ Loading board from serverless...")
+      await reloadBoardFromServerless()
+    } catch (e) {
+      logLine(String(e?.message || "⚠️ serverless /board unreachable"))
+      $("fit").click()
+      render()
+      resolveHoverOwner(state.hover)
+    }
+  })()
 
   async function pollBoard() {
     if (polling) return
@@ -1245,100 +1324,6 @@ async function run() {
       await new Promise((r) => setTimeout(r, 1000))
     }
   }
-
-  $("reload").onclick = async () => {
-    const b = $("reload")
-    if (b) {
-      b.disabled = true
-      b.textContent = "Reloading..."
-    }
-    try {
-      logLine("⏳ Reloading board from serverless...")
-      clearBoardLocal()
-      lastSince = new Date(0).toISOString()
-      const r2 = await loadBoardFromServerlessFull()
-      logLine(`✅ Board reloaded (chunks=${r2.chunksApplied}${r2.metaApplied ? ", meta" : ""}).`)
-      $("fit").click()
-      render()
-      resolveHoverOwner(state.hover)
-    } catch (e) {
-      showFatal(e)
-    } finally {
-      if (b) {
-        b.disabled = false
-        b.textContent = "Reload board"
-      }
-    }
-  }
-
-  $("clear").onclick = () => {
-    clearBoardLocal()
-    logLine("🧹 Cleared locally.")
-    render()
-    resolveHoverOwner(state.hover)
-  }
-
-  const resetSessionBtn = $("resetSession")
-  if (resetSessionBtn) {
-    resetSessionBtn.onclick = async () => {
-      if (!window.__isAdmin) {
-        logLine("admin_only")
-        return
-      }
-      const prevText = resetSessionBtn.textContent
-      resetSessionBtn.disabled = true
-      resetSessionBtn.textContent = "Resetting..."
-      try {
-        console.log(JSON.stringify({ t: new Date().toISOString(), event: "resetSession:ui_click", inDiscord }))
-        logLine("⏳ Resetting board (deleting ALL chunks)...")
-        const rr = await resetBoardBackend(inDiscord)
-        console.log(JSON.stringify({ t: new Date().toISOString(), event: "resetSession:proxy_ok", rr }))
-
-        clearBoardLocal()
-        lastSince = new Date(0).toISOString()
-        console.log(JSON.stringify({ t: new Date().toISOString(), event: "resetSession:local_cleared", lastSince }))
-
-        logLine("⏳ Reloading board after reset...")
-        const t0 = performance.now()
-        const r2 = await loadBoardFromServerlessFull()
-        console.log(JSON.stringify({
-          t: new Date().toISOString(),
-          event: "resetSession:reload_done",
-          ms: Math.round(performance.now() - t0),
-          chunksApplied: r2.chunksApplied,
-          metaApplied: r2.metaApplied
-        }))
-
-        logLine(`✅ Board reset (chunks=${r2.chunksApplied}${r2.metaApplied ? ", meta" : ""}).`)
-        $("fit").click()
-        render()
-        resolveHoverOwner(state.hover)
-      } catch (e) {
-        console.log(JSON.stringify({ t: new Date().toISOString(), event: "resetSession:error", msg: String(e?.message || e), err: String(e?.stack || e) }))
-        logLine(String(e?.message || e))
-      } finally {
-        resetSessionBtn.disabled = false
-        resetSessionBtn.textContent = prevText
-      }
-    }
-  }
-
-  buildPalette()
-
-  ;(async () => {
-    try {
-      logLine("⏳ Loading board from serverless...")
-      clearBoardLocal()
-      lastSince = new Date(0).toISOString()
-      const r2 = await loadBoardFromServerlessFull()
-      logLine(`✅ Board loaded (chunks=${r2.chunksApplied}${r2.metaApplied ? ", meta" : ""}).`)
-    } catch (e) {
-      logLine(String(e?.message || "⚠️ serverless /board unreachable"))
-    }
-    $("fit").click()
-    render()
-    resolveHoverOwner(state.hover)
-  })()
 
   pollBoard()
 }
