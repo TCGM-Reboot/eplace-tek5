@@ -1,7 +1,7 @@
 import "./style.css"
 import { DiscordSDK } from "@discord/embedded-app-sdk"
 
-console.log("MAIN.JS VERSION = BOARD_V2_SERVERLESS_RELOAD", new Date().toISOString())
+console.log("MAIN.JS VERSION = BOARD_V3_HOVER_USER", new Date().toISOString())
 
 const GATEWAY_BASE = "https://1224715390362324992.discordsays.com/gcp"
 
@@ -36,7 +36,7 @@ function showFatal(err) {
 window.addEventListener("error", (e) => showFatal(e.error || e.message))
 window.addEventListener("unhandledrejection", (e) => {
   const msg = String(e?.reason?.message || e?.reason || "")
-  if (msg.includes("session_paused") || msg.includes("admin_only") || msg.includes("cooldown")) {
+  if (msg.includes("session_paused") || msg.includes("admin_only") || msg.includes("cooldown") || msg.includes("rate")) {
     console.warn("Non-fatal rejection:", e.reason)
     return
   }
@@ -227,15 +227,11 @@ function setUserSlotState(state) {
 }
 
 async function loginDiscordActivity() {
-  console.log(JSON.stringify({ t: new Date().toISOString(), event: "login_start", href: location.href, origin: location.origin, search: location.search }))
   const cfg = await api("/api/auth/config")
   if (!cfg.res.ok || !cfg.data?.clientId) throw new Error("missing_client_id")
 
-  console.log(JSON.stringify({ t: new Date().toISOString(), event: "config_loaded", clientId: cfg.data.clientId, clientIdLen: String(cfg.data.clientId).length }))
-
   const discordSdk = new DiscordSDK(cfg.data.clientId)
   await discordSdk.ready()
-  console.log(JSON.stringify({ t: new Date().toISOString(), event: "sdk_ready" }))
 
   const authz = await discordSdk.commands.authorize({
     client_id: cfg.data.clientId,
@@ -244,8 +240,6 @@ async function loginDiscordActivity() {
     prompt: "consent",
     scope: ["identify"]
   })
-
-  console.log(JSON.stringify({ t: new Date().toISOString(), event: "authorize_done", code_present: Boolean(authz?.code), code_len: String(authz?.code || "").length }))
 
   const tokenRes = await api("/api/token", {
     method: "POST",
@@ -258,11 +252,7 @@ async function loginDiscordActivity() {
     throw new Error(`token_exchange_failed ${d}`)
   }
 
-  console.log(JSON.stringify({ t: new Date().toISOString(), event: "token_ok", access_token_len: String(tokenRes.data.access_token).length }))
-
   const auth = await discordSdk.commands.authenticate({ access_token: tokenRes.data.access_token })
-  console.log(JSON.stringify({ t: new Date().toISOString(), event: "authenticate_done", user_present: Boolean(auth?.user) }))
-
   if (!auth?.user) throw new Error("authenticate_failed")
 
   const u = {
@@ -273,7 +263,6 @@ async function loginDiscordActivity() {
   }
 
   localStorage.setItem("activity_user", JSON.stringify(u))
-  console.log(JSON.stringify({ t: new Date().toISOString(), event: "user_saved", id: u.id, username: u.username }))
   return u
 }
 
@@ -370,6 +359,29 @@ async function placePixelBackend(inDiscord, x, y, colorHexOrInt) {
   return data
 }
 
+async function resolveUserHashBackend(userHash) {
+  const reqId = makeReqId()
+  const res = await fetch(`${GATEWAY_BASE}/proxy`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      type: "RESOLVE_USERHASH",
+      payload: {
+        from: "activity",
+        at: new Date().toISOString(),
+        reqId,
+        userHash: String(userHash)
+      }
+    })
+  })
+
+  const text = await res.text().catch(() => "")
+  let data = null
+  try { data = text ? JSON.parse(text) : null } catch { data = { raw: text } }
+  if (!res.ok) throw new Error(`RESOLVE_USERHASH failed: ${res.status} ${JSON.stringify(data)}`)
+  return data
+}
+
 async function getBoardBackend(inDiscord, since, limit = 200, pageToken = null, extra = {}) {
   const reqId = makeReqId()
   const user = await getUserForPayload(inDiscord)
@@ -422,6 +434,10 @@ function guessSquareSize(n) {
   return null
 }
 
+function u32le(bytes, off) {
+  return (bytes[off + 0] | (bytes[off + 1] << 8) | (bytes[off + 2] << 16) | (bytes[off + 3] << 24)) >>> 0
+}
+
 async function run() {
   const app = document.querySelector("#app")
   if (!app) throw new Error("Missing #app root element")
@@ -446,6 +462,8 @@ async function run() {
             <div>Pan: <span id="panVal"></span></div>
             <div>Hover pixel: <span id="hoverVal"></span></div>
             <div>Selected color: <span id="colorVal"></span></div>
+            <div>Placed by: <span id="hoverBy"></span></div>
+            <div>Discord ID: <span id="hoverId"></span></div>
             <div style="margin-top:6px; opacity:.7;">
               - Molette: zoom<br/>
               - Drag: pan<br/>
@@ -503,7 +521,6 @@ async function run() {
       btn.disabled = true
       btn.textContent = "Ping..."
       out.textContent = ""
-
       try {
         const data = await pingBackend(inDiscord)
         out.textContent = JSON.stringify(data, null, 2)
@@ -534,21 +551,17 @@ async function run() {
 
   function applyRoleUI(isAdmin) {
     window.__canPlace = true
-
     setHidden("reload", false)
     setHidden("start", !isAdmin)
     setHidden("pause", !isAdmin)
     setHidden("resetSession", !isAdmin)
     setHidden("snapshot", !isAdmin)
     setHidden("clear", !isAdmin)
-
     const brand = document.querySelector(".brandTitle")
     if (brand) brand.textContent = isAdmin ? "r/place viewer (ADMIN)" : "r/place viewer"
   }
 
   async function attemptLogin() {
-    console.log(JSON.stringify({ t: new Date().toISOString(), event: "attempt_login", inDiscord }))
-
     if (!inDiscord) {
       const fromUrl = readWebUserFromUrl()
       if (fromUrl?.id) {
@@ -579,7 +592,6 @@ async function run() {
 
     try {
       const cached = await getActivityUser()
-      console.log(JSON.stringify({ t: new Date().toISOString(), event: "cache", present: Boolean(cached?.id) }))
       if (cached?.id) {
         setUserSlotState({ type: "user", user: cached })
         return
@@ -587,7 +599,6 @@ async function run() {
       const u = await loginDiscordActivity()
       setUserSlotState({ type: "user", user: u })
     } catch (e) {
-      console.log(JSON.stringify({ t: new Date().toISOString(), event: "login_error", message: String(e?.message || e), stack: String(e?.stack || "") }))
       logLine(String(e?.message || e))
       setUserSlotState({ type: "error", onRetry: attemptLogin })
     }
@@ -597,9 +608,6 @@ async function run() {
 
   const r = await apiWithUser("/api/user/isAdmin")
   const isAdmin = Boolean(r.data?.isAdmin)
-
-  console.log("isAdmin =", isAdmin)
-
   window.__isAdmin = isAdmin
   applyRoleUI(isAdmin)
 
@@ -609,9 +617,18 @@ async function run() {
   ]
 
   const view = { zoom: 6, panX: 0, panY: 0 }
-  const state = { selectedColor: 2, hover: null, isDragging: false, dragStart: null }
+  const state = { selectedColor: 2, hover: null, isDragging: false, dragStart: null, hoverHash: 0, hoverTs: 0 }
 
-  let board = { w: 100, h: 100, pixels: new Uint8Array(100 * 100), colors: 16, cooldownMs: 10000 }
+  let board = {
+    w: 100,
+    h: 100,
+    pixels: new Uint8Array(100 * 100),
+    metaHash: new Uint32Array(100 * 100),
+    metaTs: new Uint32Array(100 * 100),
+    colors: 16,
+    cooldownMs: 10000
+  }
+
   let chunkSize = 10
 
   const canvas = $("cv")
@@ -648,6 +665,11 @@ async function run() {
     $("hoverVal").textContent = state.hover ? `${state.hover.x}, ${state.hover.y}` : "-"
   }
 
+  function setHoverUserText(username, id) {
+    $("hoverBy").textContent = username || "-"
+    $("hoverId").textContent = id || "-"
+  }
+
   function hexToRgba(hex, a) {
     const h = hex.replace("#", "")
     const r = parseInt(h.slice(0, 2), 16)
@@ -656,12 +678,27 @@ async function run() {
     return `rgba(${r},${g},${b},${a})`
   }
 
+  function idx(x, y) {
+    return y * board.w + x
+  }
+
   function getColorAt(x, y) {
-    return board.pixels[y * board.w + x] ?? 1
+    return board.pixels[idx(x, y)] ?? 1
   }
 
   function setColorAt(x, y, colorId) {
-    board.pixels[y * board.w + x] = colorId
+    board.pixels[idx(x, y)] = colorId
+  }
+
+  function getMetaAt(x, y) {
+    const i = idx(x, y)
+    return { userHash: board.metaHash[i] >>> 0, ts: board.metaTs[i] >>> 0 }
+  }
+
+  function setMetaAt(x, y, userHash, ts) {
+    const i = idx(x, y)
+    board.metaHash[i] = userHash >>> 0
+    board.metaTs[i] = ts >>> 0
   }
 
   function ensureBoardSize(w, h) {
@@ -672,6 +709,8 @@ async function run() {
     board.h = H
     board.pixels = new Uint8Array(W * H)
     board.pixels.fill(1)
+    board.metaHash = new Uint32Array(W * H)
+    board.metaTs = new Uint32Array(W * H)
   }
 
   function applyChunk(cx, cy, bytes, inferredSize) {
@@ -693,6 +732,30 @@ async function run() {
     }
   }
 
+  function applyChunkMeta(cx, cy, bytes, inferredSize) {
+    const sz = Math.max(1, Math.floor(Number(inferredSize || chunkSize || 1)))
+    const ox = cx * sz
+    const oy = cy * sz
+    const maxW = board.w
+    const maxH = board.h
+    const w = Math.min(sz, Math.max(0, maxW - ox))
+    const h = Math.min(sz, Math.max(0, maxH - oy))
+    if (w <= 0 || h <= 0) return
+
+    const expected = sz * sz * 8
+    if (!bytes || bytes.length < expected) return
+
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const pixIndex = (y * sz + x)
+        const off = pixIndex * 8
+        const userHash = u32le(bytes, off + 0)
+        const ts = u32le(bytes, off + 4)
+        setMetaAt(ox + x, oy + y, userHash, ts)
+      }
+    }
+  }
+
   async function loadBoardFromServerlessFull() {
     const since = new Date(0).toISOString()
     const limit = 500
@@ -700,17 +763,18 @@ async function run() {
     let metaApplied = false
     let any = 0
 
-    const metaExtra = { includeMeta: "true" }
+    const metaExtra = { includeMeta: "true", includePixelMeta: "true" }
     while (true) {
-      const data = await getBoardBackend(inDiscord, since, limit, pageToken, metaApplied ? {} : metaExtra)
+      const data = await getBoardBackend(inDiscord, since, limit, pageToken, metaApplied ? { includePixelMeta: "true" } : metaExtra)
       const chunks = Array.isArray(data?.chunks) ? data.chunks : []
+
       for (const c of chunks) {
         if (!metaApplied && c?.metaGzipB64) {
           const metaBytes = await gunzipBytes(b64ToBytes(c.metaGzipB64))
           const metaTxt = new TextDecoder().decode(metaBytes)
           let meta = null
           try { meta = metaTxt ? JSON.parse(metaTxt) : null } catch { meta = null }
-          if (meta) {
+          if (meta && (meta.w || meta.h || meta.colors || meta.cooldownMs || meta.chunkSize)) {
             if (meta.w && meta.h) ensureBoardSize(meta.w, meta.h)
             if (meta.colors) board.colors = Number(meta.colors) || board.colors
             if (meta.cooldownMs) board.cooldownMs = Number(meta.cooldownMs) || board.cooldownMs
@@ -728,6 +792,21 @@ async function run() {
           }
           if (sz && sz > 0) applyChunk(Number(c.cx || 0), Number(c.cy || 0), bytes, sz)
           any++
+        }
+
+        if (c?.pixelMetaGzipB64 || c?.metaPixelsGzipB64 || c?.pixelMetaGzip || c?.metaPixelsGzip) {
+          const key =
+            c?.pixelMetaGzipB64 ? "pixelMetaGzipB64" :
+              c?.metaPixelsGzipB64 ? "metaPixelsGzipB64" :
+                c?.pixelMetaGzip ? "pixelMetaGzip" :
+                  "metaPixelsGzip"
+          const metaPixBytes = await gunzipBytes(b64ToBytes(c[key]))
+          let sz = chunkSize
+          if (!sz || sz <= 0) {
+            const g = guessSquareSize(Math.floor(metaPixBytes.length / 8))
+            if (g) sz = g
+          }
+          if (sz && sz > 0) applyChunkMeta(Number(c.cx || 0), Number(c.cy || 0), metaPixBytes, sz)
         }
       }
 
@@ -779,6 +858,61 @@ async function run() {
     updateHUD()
   }
 
+  const userHashCache = new Map()
+  let hoverResolveToken = 0
+
+  async function resolveHoverOwner(p) {
+    const token = ++hoverResolveToken
+    if (!p) {
+      setHoverUserText("-", "-")
+      return
+    }
+
+    const m = getMetaAt(p.x, p.y)
+    state.hoverHash = m.userHash >>> 0
+    state.hoverTs = m.ts >>> 0
+
+    if (!m.userHash) {
+      setHoverUserText("-", "-")
+      return
+    }
+
+    const cached = userHashCache.get(m.userHash)
+    if (cached) {
+      setHoverUserText(cached.username || "-", cached.userId || "-")
+      return
+    }
+
+    setHoverUserText("Loading…", String(m.userHash))
+
+    try {
+      const data = await resolveUserHashBackend(m.userHash)
+      if (token !== hoverResolveToken) return
+
+      const userId =
+        data?.userId ||
+        data?.discordId ||
+        data?.id ||
+        data?.user?.id ||
+        ""
+
+      const username =
+        data?.username ||
+        data?.discordUsername ||
+        data?.user?.username ||
+        data?.user?.global_name ||
+        data?.user?.name ||
+        ""
+
+      const norm = { userId: userId ? String(userId) : "", username: username ? String(username) : "" }
+      userHashCache.set(m.userHash, norm)
+      setHoverUserText(norm.username || "-", norm.userId || "-")
+    } catch {
+      if (token !== hoverResolveToken) return
+      setHoverUserText("-", String(m.userHash))
+    }
+  }
+
   canvas.addEventListener("wheel", (e) => {
     e.preventDefault()
     const before = screenToWorld(e.clientX, e.clientY)
@@ -799,7 +933,9 @@ async function run() {
   })
 
   canvas.addEventListener("pointermove", (e) => {
+    const prev = state.hover ? `${state.hover.x},${state.hover.y}` : ""
     state.hover = worldPixelFromEvent(e)
+    const next = state.hover ? `${state.hover.x},${state.hover.y}` : ""
     if (state.isDragging) {
       const dx = e.clientX - state.dragStart.x
       const dy = e.clientY - state.dragStart.y
@@ -807,6 +943,7 @@ async function run() {
       view.panY = state.dragStart.panY + dy
     }
     render()
+    if (prev !== next) resolveHoverOwner(state.hover)
   })
 
   canvas.addEventListener("pointerup", () => {
@@ -828,6 +965,7 @@ async function run() {
     }
 
     render()
+    resolveHoverOwner(state.hover)
   })
 
   function buildPalette() {
@@ -877,6 +1015,7 @@ async function run() {
       logLine(`✅ Board reloaded (chunks=${r2.chunksApplied}${r2.metaApplied ? ", meta" : ""}).`)
       $("fit").click()
       render()
+      resolveHoverOwner(state.hover)
     } catch (e) {
       showFatal(e)
     } finally {
@@ -889,8 +1028,11 @@ async function run() {
 
   $("clear").onclick = () => {
     board.pixels.fill(1)
+    board.metaHash.fill(0)
+    board.metaTs.fill(0)
     logLine("🧹 Cleared locally.")
     render()
+    resolveHoverOwner(state.hover)
   }
 
   buildPalette()
@@ -905,6 +1047,7 @@ async function run() {
     }
     $("fit").click()
     render()
+    resolveHoverOwner(state.hover)
   })()
 
   let lastSince = new Date(0).toISOString()
@@ -912,14 +1055,30 @@ async function run() {
 
   async function applyUpdateChunks(chunks) {
     for (const c of chunks) {
-      if (!c?.dataGzipB64) continue
-      const bytes = await gunzipBytes(b64ToBytes(c.dataGzipB64))
-      let sz = chunkSize
-      if (!sz || sz <= 0) {
-        const g = guessSquareSize(bytes.length)
-        if (g) sz = g
+      if (c?.dataGzipB64) {
+        const bytes = await gunzipBytes(b64ToBytes(c.dataGzipB64))
+        let sz = chunkSize
+        if (!sz || sz <= 0) {
+          const g = guessSquareSize(bytes.length)
+          if (g) sz = g
+        }
+        if (sz && sz > 0) applyChunk(Number(c.cx || 0), Number(c.cy || 0), bytes, sz)
       }
-      if (sz && sz > 0) applyChunk(Number(c.cx || 0), Number(c.cy || 0), bytes, sz)
+
+      if (c?.pixelMetaGzipB64 || c?.metaPixelsGzipB64 || c?.pixelMetaGzip || c?.metaPixelsGzip) {
+        const key =
+          c?.pixelMetaGzipB64 ? "pixelMetaGzipB64" :
+            c?.metaPixelsGzipB64 ? "metaPixelsGzipB64" :
+              c?.pixelMetaGzip ? "pixelMetaGzip" :
+                "metaPixelsGzip"
+        const metaPixBytes = await gunzipBytes(b64ToBytes(c[key]))
+        let sz = chunkSize
+        if (!sz || sz <= 0) {
+          const g = guessSquareSize(Math.floor(metaPixBytes.length / 8))
+          if (g) sz = g
+        }
+        if (sz && sz > 0) applyChunkMeta(Number(c.cx || 0), Number(c.cy || 0), metaPixBytes, sz)
+      }
     }
   }
 
@@ -933,7 +1092,7 @@ async function run() {
         let changed = false
 
         do {
-          const data = await getBoardBackend(inDiscord, lastSince, 200, pageToken)
+          const data = await getBoardBackend(inDiscord, lastSince, 200, pageToken, { includePixelMeta: "true" })
           const chunks = Array.isArray(data?.chunks) ? data.chunks : []
           if (chunks.length) {
             await applyUpdateChunks(chunks)
@@ -946,7 +1105,10 @@ async function run() {
         } while (pageToken)
 
         lastSince = maxUpdatedAt
-        if (changed) render()
+        if (changed) {
+          render()
+          resolveHoverOwner(state.hover)
+        }
       } catch (e) {
         console.error(e)
       }
