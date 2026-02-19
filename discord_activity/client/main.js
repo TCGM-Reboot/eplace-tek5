@@ -22,7 +22,7 @@ function showFatal(err) {
       <div class="topbar">
         <div class="brand">
           <div class="badge"></div>
-          <div class="brandTitle">r/placed viewer</div>
+          <div class="brandTitle">r/placeds viewer</div>
         </div>
       </div>
       <div class="fatal">
@@ -1223,7 +1223,7 @@ async function run() {
 
   const resetSessionBtn = $("resetSession")
   if (resetSessionBtn) {
-    resetSessionBtn.onclick = async () => {azad
+    resetSessionBtn.onclick = async () => {
 
       const prevText = resetSessionBtn.textContent
       resetSessionBtn.disabled = true
