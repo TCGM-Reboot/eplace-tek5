@@ -22,7 +22,7 @@ function showFatal(err) {
       <div class="topbar">
         <div class="brand">
           <div class="badge"></div>
-          <div class="brandTitle">r/place viewer</div>
+          <div class="brandTitle">r/placed viewer</div>
         </div>
       </div>
       <div class="fatal">
