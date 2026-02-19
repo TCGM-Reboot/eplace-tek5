@@ -364,19 +364,20 @@ async function resetBoardBackend(inDiscord) {
   let data = null
   try { data = text ? JSON.parse(text) : null } catch { data = { raw: text } }
 
+  const ms = Math.round(performance.now() - t0)
   console.log(JSON.stringify({
     t: new Date().toISOString(),
     event: "reset:response",
     status: res.status,
     ok: res.ok,
-    ms: Math.round(performance.now() - t0),
+    ms,
     reqId,
     userId: userId || null,
     data
   }))
 
   if (!res.ok) throw new Error(`RESET_BOARD failed: ${res.status} ${JSON.stringify(data)}`)
-  return { data, _client: { reqId, userId, ms: Math.round(performance.now() - t0) } }
+  return { data, _client: { reqId, userId, ms } }
 }
 
 async function placePixelBackend(inDiscord, x, y, colorHexOrInt) {
@@ -768,6 +769,9 @@ async function run() {
     board.metaTs = new Uint32Array(W * H)
   }
 
+  const userHashCache = new Map()
+  let hoverResolveToken = 0
+
   function clearBoardLocal() {
     if (board?.pixels?.length) board.pixels.fill(1)
     if (board?.metaHash?.length) board.metaHash.fill(0)
@@ -920,9 +924,6 @@ async function run() {
     updateHUD()
   }
 
-  const userHashCache = new Map()
-  let hoverResolveToken = 0
-
   async function resolveHoverOwner(p) {
     const token = ++hoverResolveToken
     if (!p) {
@@ -1058,11 +1059,53 @@ async function run() {
     render()
   }
 
-  $("reset").onclick = () => {
-    view.zoom = 6
-    view.panX = 0
-    view.panY = 0
-    render()
+  $("reset").onclick = async () => {
+    if (!window.__isAdmin) {
+      logLine("admin_only")
+      return
+    }
+
+    const b = $("reset")
+    const prev = b ? b.textContent : "Reset"
+    if (b) {
+      b.disabled = true
+      b.textContent = "Resetting..."
+    }
+
+    try {
+      console.log(JSON.stringify({ t: new Date().toISOString(), event: "reset:ui_click", inDiscord }))
+      logLine("⏳ Resetting board (deleting ALL chunks)...")
+      const rr = await resetBoardBackend(inDiscord)
+      console.log(JSON.stringify({ t: new Date().toISOString(), event: "reset:proxy_ok", rr }))
+
+      clearBoardLocal()
+      lastSince = new Date(0).toISOString()
+      console.log(JSON.stringify({ t: new Date().toISOString(), event: "reset:local_cleared", lastSince }))
+
+      logLine("⏳ Reloading board after reset...")
+      const t0 = performance.now()
+      const r2 = await loadBoardFromServerlessFull()
+      console.log(JSON.stringify({
+        t: new Date().toISOString(),
+        event: "reset:reload_done",
+        ms: Math.round(performance.now() - t0),
+        chunksApplied: r2.chunksApplied,
+        metaApplied: r2.metaApplied
+      }))
+
+      logLine(`✅ Board reset (chunks=${r2.chunksApplied}${r2.metaApplied ? ", meta" : ""}).`)
+      $("fit").click()
+      render()
+      resolveHoverOwner(state.hover)
+    } catch (e) {
+      console.log(JSON.stringify({ t: new Date().toISOString(), event: "reset:error", msg: String(e?.message || e), err: String(e?.stack || e) }))
+      logLine(String(e?.message || e))
+    } finally {
+      if (b) {
+        b.disabled = false
+        b.textContent = prev
+      }
+    }
   }
 
   let lastSince = new Date(0).toISOString()
@@ -1163,32 +1206,32 @@ async function run() {
     resolveHoverOwner(state.hover)
   }
 
-  const resetBtn = $("resetSession")
-  if (resetBtn) {
-    resetBtn.onclick = async () => {
+  const resetSessionBtn = $("resetSession")
+  if (resetSessionBtn) {
+    resetSessionBtn.onclick = async () => {
       if (!window.__isAdmin) {
         logLine("admin_only")
         return
       }
-      const prevText = resetBtn.textContent
-      resetBtn.disabled = true
-      resetBtn.textContent = "Resetting..."
+      const prevText = resetSessionBtn.textContent
+      resetSessionBtn.disabled = true
+      resetSessionBtn.textContent = "Resetting..."
       try {
-        console.log(JSON.stringify({ t: new Date().toISOString(), event: "reset:ui_click", inDiscord }))
+        console.log(JSON.stringify({ t: new Date().toISOString(), event: "resetSession:ui_click", inDiscord }))
         logLine("⏳ Resetting board (deleting ALL chunks)...")
         const rr = await resetBoardBackend(inDiscord)
-        console.log(JSON.stringify({ t: new Date().toISOString(), event: "reset:proxy_ok", rr }))
+        console.log(JSON.stringify({ t: new Date().toISOString(), event: "resetSession:proxy_ok", rr }))
 
         clearBoardLocal()
         lastSince = new Date(0).toISOString()
-        console.log(JSON.stringify({ t: new Date().toISOString(), event: "reset:local_cleared", lastSince }))
+        console.log(JSON.stringify({ t: new Date().toISOString(), event: "resetSession:local_cleared", lastSince }))
 
         logLine("⏳ Reloading board after reset...")
         const t0 = performance.now()
         const r2 = await loadBoardFromServerlessFull()
         console.log(JSON.stringify({
           t: new Date().toISOString(),
-          event: "reset:reload_done",
+          event: "resetSession:reload_done",
           ms: Math.round(performance.now() - t0),
           chunksApplied: r2.chunksApplied,
           metaApplied: r2.metaApplied
@@ -1199,11 +1242,11 @@ async function run() {
         render()
         resolveHoverOwner(state.hover)
       } catch (e) {
-        console.log(JSON.stringify({ t: new Date().toISOString(), event: "reset:error", msg: String(e?.message || e), err: String(e?.stack || e) }))
+        console.log(JSON.stringify({ t: new Date().toISOString(), event: "resetSession:error", msg: String(e?.message || e), err: String(e?.stack || e) }))
         logLine(String(e?.message || e))
       } finally {
-        resetBtn.disabled = false
-        resetBtn.textContent = prevText
+        resetSessionBtn.disabled = false
+        resetSessionBtn.textContent = prevText
       }
     }
   }
