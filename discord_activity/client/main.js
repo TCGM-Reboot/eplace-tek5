@@ -302,6 +302,20 @@ async function getUserForPayload(inDiscord) {
   return { id: u.id, username: u.username || "", avatar: u.avatar || "" }
 }
 
+async function getUserIdForReset(inDiscord) {
+  if (inDiscord) {
+    const u = await getActivityUser()
+    return u?.id ? String(u.id) : null
+  }
+  const cached = getCachedWebUser()
+  if (cached?.id) return String(cached.id)
+  try {
+    const wu = await getWebUser()
+    if (wu?.id) return String(wu.id)
+  } catch {}
+  return null
+}
+
 async function pingBackend(inDiscord) {
   const reqId = makeReqId()
   const user = await getUserForPayload(inDiscord)
@@ -321,6 +335,31 @@ async function pingBackend(inDiscord) {
   })
 
   const data = await res.json()
+  return data
+}
+
+async function resetBoardBackend(inDiscord) {
+  const reqId = makeReqId()
+  const userId = await getUserIdForReset(inDiscord)
+
+  const res = await fetch(`${GATEWAY_BASE}/proxy`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      type: "RESET_BOARD",
+      payload: {
+        from: "activity",
+        at: new Date().toISOString(),
+        reqId,
+        userId
+      }
+    })
+  })
+
+  const text = await res.text().catch(() => "")
+  let data = null
+  try { data = text ? JSON.parse(text) : null } catch { data = { raw: text } }
+  if (!res.ok) throw new Error(`RESET_BOARD failed: ${res.status} ${JSON.stringify(data)}`)
   return data
 }
 
@@ -1113,6 +1152,38 @@ async function run() {
         console.error(e)
       }
       await new Promise((r) => setTimeout(r, 1000))
+    }
+  }
+
+  const resetBtn = $("resetSession")
+  if (resetBtn) {
+    resetBtn.onclick = async () => {
+      if (!window.__isAdmin) {
+        logLine("admin_only")
+        return
+      }
+      const prevText = resetBtn.textContent
+      resetBtn.disabled = true
+      resetBtn.textContent = "Resetting..."
+      try {
+        logLine("⏳ Resetting board...")
+        await resetBoardBackend(inDiscord)
+        board.pixels.fill(1)
+        board.metaHash.fill(0)
+        board.metaTs.fill(0)
+        lastSince = new Date(0).toISOString()
+        logLine("⏳ Reloading board after reset...")
+        const r2 = await loadBoardFromServerlessFull()
+        logLine(`✅ Board reset (chunks=${r2.chunksApplied}${r2.metaApplied ? ", meta" : ""}).`)
+        $("fit").click()
+        render()
+        resolveHoverOwner(state.hover)
+      } catch (e) {
+        logLine(String(e?.message || e))
+      } finally {
+        resetBtn.disabled = false
+        resetBtn.textContent = prevText
+      }
     }
   }
 
