@@ -1,7 +1,7 @@
 import "./style.css"
 import { DiscordSDK } from "@discord/embedded-app-sdk"
 
-console.log("MAIN.JS VERSION = BOARD_V3_NO_SERVER_SELECT_IDENTIFY_ONLY", new Date().toISOString())
+console.log("MAIN.JS VERSION = BOARD_V3_RELOAD_GETBOARD_RESET_FULLRELOAD", new Date().toISOString())
 
 const GATEWAY_BASE = "https://1224715390362324992.discordsays.com/gcp"
 
@@ -245,7 +245,7 @@ async function sessionStartBackend(inDiscord) {
 
   const text = await res.text().catch(() => "")
   let data = null
-  try { data = text ? JSON.parse(text) : null } catch { data = { raw: text } }
+ try { data = text ? JSON.parse(text) : null } catch { data = { raw: text } }
   if (!res.ok) throw new Error(`SESSION_START failed: ${res.status} ${JSON.stringify(data)}`)
   return data
 }
@@ -295,9 +295,6 @@ async function resetBoardBackend(inDiscord) {
     }
   }
 
-  console.log(JSON.stringify({ t: new Date().toISOString(), event: "reset:request", url: `${GATEWAY_BASE}/proxy`, payload }))
-  const t0 = performance.now()
-
   const res = await fetch(`${GATEWAY_BASE}/proxy`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -308,20 +305,8 @@ async function resetBoardBackend(inDiscord) {
   let data = null
   try { data = text ? JSON.parse(text) : null } catch { data = { raw: text } }
 
-  const ms = Math.round(performance.now() - t0)
-  console.log(JSON.stringify({
-    t: new Date().toISOString(),
-    event: "reset:response",
-    status: res.status,
-    ok: res.ok,
-    ms,
-    reqId,
-    userId: userId || null,
-    data
-  }))
-
   if (!res.ok) throw new Error(`RESET_BOARD failed: ${res.status} ${JSON.stringify(data)}`)
-  return { data, _client: { reqId, userId, ms } }
+  return data
 }
 
 async function snapshotBackend(inDiscord, region = null) {
@@ -342,9 +327,6 @@ async function snapshotBackend(inDiscord, region = null) {
     }
   }
 
-  console.log(JSON.stringify({ t: new Date().toISOString(), event: "snapshot:request", url: `${GATEWAY_BASE}/proxy`, payload }))
-  const t0 = performance.now()
-
   const res = await fetch(`${GATEWAY_BASE}/proxy`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -355,20 +337,8 @@ async function snapshotBackend(inDiscord, region = null) {
   let data = null
   try { data = text ? JSON.parse(text) : null } catch { data = { raw: text } }
 
-  const ms = Math.round(performance.now() - t0)
-  console.log(JSON.stringify({
-    t: new Date().toISOString(),
-    event: "snapshot:response",
-    status: res.status,
-    ok: res.ok,
-    ms,
-    reqId,
-    userId: userId || null,
-    data
-  }))
-
   if (!res.ok) throw new Error(`SNAPSHOT_CREATE failed: ${res.status} ${JSON.stringify(data)}`)
-  return { data, _client: { reqId, userId, ms } }
+  return data
 }
 
 async function placePixelBackend(inDiscord, x, y, colorHexOrInt) {
@@ -1013,7 +983,7 @@ async function run() {
     }
   }
 
-  async function reloadBoardFromServerless() {
+  async function fullReloadFromServerless() {
     logLine("⏳ Reloading board from serverless...")
     clearBoardLocal()
     lastSince = new Date(0).toISOString()
@@ -1024,6 +994,35 @@ async function run() {
     resolveHoverOwner(state.hover)
   }
 
+  async function quickGetBoardOnce() {
+    logLine("⏳ Fetching latest chunks...")
+    let pageToken = null
+    let maxUpdatedAt = lastSince
+    let changed = false
+
+    do {
+      const data = await getBoardBackend(inDiscord, lastSince, 500, pageToken, {})
+      const chunks = Array.isArray(data?.chunks) ? data.chunks : []
+      if (chunks.length) {
+        await applyUpdateChunks(chunks)
+        changed = true
+      }
+      for (const c of chunks) {
+        if (c?.updatedAt && String(c.updatedAt) > String(maxUpdatedAt)) maxUpdatedAt = String(c.updatedAt)
+      }
+      pageToken = data?.nextPageToken || null
+    } while (pageToken)
+
+    lastSince = maxUpdatedAt
+    if (changed) {
+      logLine("✅ Updated.")
+      render()
+      resolveHoverOwner(state.hover)
+    } else {
+      logLine("✅ No changes.")
+    }
+  }
+
   $("reload").onclick = async () => {
     const b = $("reload")
     const prev = b ? b.textContent : "Reload board"
@@ -1032,9 +1031,9 @@ async function run() {
       b.textContent = "Reloading..."
     }
     try {
-      await reloadBoardFromServerless()
+      await quickGetBoardOnce()
     } catch (e) {
-      showFatal(e)
+      logLine(String(e?.message || e))
     } finally {
       if (b) {
         b.disabled = false
@@ -1050,16 +1049,10 @@ async function run() {
       b.disabled = true
       b.textContent = "Resetting..."
     }
-
     try {
-      console.log(JSON.stringify({ t: new Date().toISOString(), event: "reset:ui_click", inDiscord }))
-      logLine("⏳ Resetting board (deleting ALL chunks)...")
-      await resetBoardBackend(inDiscord)
-      await reloadBoardFromServerless()
-      logLine("✅ Board reset.")
+      await fullReloadFromServerless()
     } catch (e) {
-      console.log(JSON.stringify({ t: new Date().toISOString(), event: "reset:error", msg: String(e?.message || e), err: String(e?.stack || e) }))
-      logLine(String(e?.message || e))
+      showFatal(e)
     } finally {
       if (b) {
         b.disabled = false
@@ -1076,12 +1069,10 @@ async function run() {
       snapBtn.textContent = "Snapshotting..."
 
       try {
-        console.log(JSON.stringify({ t: new Date().toISOString(), event: "snapshot:ui_click", inDiscord }))
         logLine("⏳ Creating snapshot...")
         await snapshotBackend(inDiscord, null)
         logLine("✅ Snapshot requested.")
       } catch (e) {
-        console.log(JSON.stringify({ t: new Date().toISOString(), event: "snapshot:error", msg: String(e?.message || e), err: String(e?.stack || e) }))
         logLine(String(e?.message || e))
       } finally {
         snapBtn.disabled = false
@@ -1104,13 +1095,11 @@ async function run() {
       resetSessionBtn.disabled = true
       resetSessionBtn.textContent = "Resetting..."
       try {
-        console.log(JSON.stringify({ t: new Date().toISOString(), event: "resetSession:ui_click", inDiscord }))
         logLine("⏳ Resetting board (deleting ALL chunks)...")
         await resetBoardBackend(inDiscord)
-        await reloadBoardFromServerless()
+        await fullReloadFromServerless()
         logLine("✅ Board reset.")
       } catch (e) {
-        console.log(JSON.stringify({ t: new Date().toISOString(), event: "resetSession:error", msg: String(e?.message || e), err: String(e?.stack || e) }))
         logLine(String(e?.message || e))
       } finally {
         resetSessionBtn.disabled = false
@@ -1126,7 +1115,6 @@ async function run() {
       startBtn.disabled = true
       startBtn.textContent = "Starting..."
       try {
-        console.log(JSON.stringify({ t: new Date().toISOString(), event: "session:start:ui_click", inDiscord }))
         logLine("⏳ Session start...")
         const data = await sessionStartBackend(inDiscord)
         logLine(`✅ Session started.${data?.ok === false ? " (server returned ok=false)" : ""}`)
@@ -1146,7 +1134,6 @@ async function run() {
       pauseBtn.disabled = true
       pauseBtn.textContent = "Pausing..."
       try {
-        console.log(JSON.stringify({ t: new Date().toISOString(), event: "session:pause:ui_click", inDiscord }))
         logLine("⏳ Session pause...")
         const data = await sessionPauseBackend(inDiscord)
         logLine(`✅ Session paused.${data?.ok === false ? " (server returned ok=false)" : ""}`)
@@ -1171,7 +1158,6 @@ async function run() {
         const data = await pingBackend(inDiscord)
         pingOut.textContent = JSON.stringify(data, null, 2)
       } catch (err) {
-        console.error(err)
         pingOut.textContent = `Erreur: ${err?.message ?? String(err)}`
       } finally {
         pingBtn.disabled = false
@@ -1185,7 +1171,7 @@ async function run() {
   ;(async () => {
     try {
       logLine("⏳ Loading board from serverless...")
-      await reloadBoardFromServerless()
+      await fullReloadFromServerless()
     } catch (e) {
       logLine(String(e?.message || "⚠️ serverless /board unreachable"))
       $("fit").click()
