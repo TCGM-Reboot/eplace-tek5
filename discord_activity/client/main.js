@@ -231,43 +231,6 @@ async function loginDiscordActivity() {
   return u
 }
 
-async function loginDiscordActivity() {
-  const clientId = getDiscordClientId()
-  if (!clientId) throw new Error("missing_client_id")
-
-  const discordSdk = new DiscordSDK(clientId)
-  await discordSdk.ready()
-
-  const { code } = await discordSdk.commands.authorize({
-    client_id: clientId,
-    response_type: "code",
-    state: "",
-    prompt: "none",
-    scope: ["identify"]
-  })
-
-  const access_token = await exchangeCodeForTokenViaApi(code)
-
-  const auth = await discordSdk.commands.authenticate({ access_token })
-  if (!auth?.user) throw new Error("authenticate_failed")
-
-  const u = {
-    id: auth.user.id,
-    username: auth.user.global_name || auth.user.username,
-    avatar: auth.user.avatar,
-    avatar_url: auth.user.avatar ? `https://cdn.discordapp.com/avatars/${auth.user.id}/${auth.user.avatar}.png?size=128` : ""
-  }
-
-  setActivityUser(u)
-  setActivityAuth({
-    accessToken: access_token,
-    clientId,
-    at: new Date().toISOString()
-  })
-
-  return u
-}
-
 async function getUserForPayload(inDiscord) {
   if (!inDiscord) return null
   const u = getActivityUser()
