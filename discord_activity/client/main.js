@@ -724,11 +724,6 @@ async function run() {
           </div>
 
           <div class="row">
-            <button class="btn" id="fit">Fit</button>
-            <button class="btn" id="reset">Reset</button>
-          </div>
-
-          <div class="row">
             <button class="btn" id="reload">Reload board</button>
             <button class="btn" id="clear">Clear local</button>
             <button class="btn" id="ping-btn" type="button">Ping Backend</button>
