@@ -1737,8 +1737,8 @@ async function run() {
   requestPoll("startup_initial", true)
 }
 
-try {
-  run()
-} catch (e) {
-  showFatal(e)
-}
+// try {
+//   run()
+// } catch (e) {
+//   showFatal(e)
+// }
