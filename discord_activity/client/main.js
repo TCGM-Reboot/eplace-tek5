@@ -5,6 +5,51 @@ console.log("MAIN.JS VERSION = BOARD_V3_RELOAD_GETBOARD_RESET_FULLRELOAD", new D
 
 const GATEWAY_BASE = "https://1224715390362324992.discordsays.com/gcp"
 
+const DEBUG = true
+const DEBUG_DEEP = true
+
+function dNowIso() { return new Date().toISOString() }
+function dMsNow() { try { return performance.now() } catch { return Date.now() } }
+function dReqId() { try { return crypto.randomUUID() } catch { return String(Date.now()) + "_" + Math.random().toString(16).slice(2) } }
+
+function dSafeJson(o, maxLen = 8000) {
+  let s = ""
+  try { s = JSON.stringify(o) } catch { s = String(o) }
+  if (s.length > maxLen) s = s.slice(0, maxLen) + `…(trunc ${s.length - maxLen})`
+  return s
+}
+
+function dLog(kind, msg, data) {
+  if (!DEBUG) return
+  const rec = { t: dNowIso(), kind, msg }
+  if (data !== undefined) rec.data = data
+  console.log(`[${kind}] ${msg}`, rec)
+}
+
+function dWarn(kind, msg, data) {
+  if (!DEBUG) return
+  const rec = { t: dNowIso(), kind, msg }
+  if (data !== undefined) rec.data = data
+  console.warn(`[${kind}] ${msg}`, rec)
+}
+
+function dErr(kind, msg, data) {
+  const rec = { t: dNowIso(), kind, msg }
+  if (data !== undefined) rec.data = data
+  console.error(`[${kind}] ${msg}`, rec)
+}
+
+function dGroup(title, data) {
+  if (!DEBUG) return
+  console.groupCollapsed(title)
+  if (data !== undefined) console.log("data", data)
+}
+
+function dGroupEnd() {
+  if (!DEBUG) return
+  console.groupEnd()
+}
+
 function escapeHtml(s) {
   return String(s)
     .replaceAll("&", "&amp;")
@@ -16,6 +61,7 @@ function escapeHtml(s) {
 
 function showFatal(err) {
   const msg = (err && (err.stack || err.message)) ? String(err.stack || err.message) : String(err)
+  dErr("fatal", "showFatal", { msg })
   const root = document.querySelector("#app") || document.body
   root.innerHTML = `
     <div class="shell">
@@ -33,14 +79,20 @@ function showFatal(err) {
   `
 }
 
-window.addEventListener("error", (e) => showFatal(e.error || e.message))
-window.addEventListener("unhandledrejection", (e) => showFatal(e.reason))
+window.addEventListener("error", (e) => {
+  dErr("window_error", "error", { message: String(e?.message || ""), filename: e?.filename, lineno: e?.lineno, colno: e?.colno, stack: e?.error?.stack || null })
+  showFatal(e.error || e.message)
+})
+window.addEventListener("unhandledrejection", (e) => {
+  dErr("unhandledrejection", "promise_rejection", { reason: String(e?.reason?.message || e?.reason || ""), stack: e?.reason?.stack || null })
+  showFatal(e.reason)
+})
 
 function isProbablyDiscordActivity() {
   const qp = new URLSearchParams(location.search)
-  if (qp.get("frame_id") || qp.get("instance_id")) return true
-  if (window?.DiscordNative) return true
-  return false
+  const is = Boolean(qp.get("frame_id") || qp.get("instance_id") || window?.DiscordNative)
+  dLog("env", "isProbablyDiscordActivity", { is, search: location.search, hasDiscordNative: Boolean(window?.DiscordNative) })
+  return is
 }
 
 function avatarUrl(user) {
@@ -74,7 +126,7 @@ function getDiscordClientId() {
 }
 
 function setActivityAuth(auth) {
-  try { localStorage.setItem("activity_auth", JSON.stringify(auth || {})) } catch { }
+  try { localStorage.setItem("activity_auth", JSON.stringify(auth || {})) } catch (e) { dWarn("storage", "setActivityAuth_failed", { err: String(e?.message || e) }) }
 }
 
 function getActivityAuth() {
@@ -84,13 +136,14 @@ function getActivityAuth() {
     const a = JSON.parse(raw)
     if (!a?.accessToken) return null
     return a
-  } catch {
+  } catch (e) {
+    dWarn("storage", "getActivityAuth_failed", { err: String(e?.message || e) })
     return null
   }
 }
 
 function setActivityUser(u) {
-  try { localStorage.setItem("activity_user", JSON.stringify(u || {})) } catch { }
+  try { localStorage.setItem("activity_user", JSON.stringify(u || {})) } catch (e) { dWarn("storage", "setActivityUser_failed", { err: String(e?.message || e) }) }
 }
 
 function getActivityUser() {
@@ -98,13 +151,10 @@ function getActivityUser() {
     const raw = localStorage.getItem("activity_user")
     if (!raw) return null
     return JSON.parse(raw)
-  } catch {
+  } catch (e) {
+    dWarn("storage", "getActivityUser_failed", { err: String(e?.message || e) })
     return null
   }
-}
-
-function makeReqId() {
-  try { return crypto.randomUUID() } catch { return String(Date.now()) + "_" + Math.random().toString(16).slice(2) }
 }
 
 function hexToIntColor(colorHex) {
@@ -114,21 +164,6 @@ function hexToIntColor(colorHex) {
   if (s.startsWith("#")) return parseInt(s.slice(1), 16) >>> 0
   if (s.startsWith("0x") || s.startsWith("0X")) return parseInt(s.slice(2), 16) >>> 0
   return parseInt(s, 10) >>> 0
-}
-
-function nowIso() {
-  return new Date().toISOString()
-}
-
-function msNow() {
-  try { return performance.now() } catch { return Date.now() }
-}
-
-function safeJson(o, maxLen = 4000) {
-  let s = ""
-  try { s = JSON.stringify(o) } catch { s = String(o) }
-  if (s.length > maxLen) s = s.slice(0, maxLen) + `…(trunc ${s.length - maxLen})`
-  return s
 }
 
 function headersToObj(h) {
@@ -146,90 +181,138 @@ function parseMaybeJson(text) {
 }
 
 async function fetchDebug(url, opts, info) {
-  const id = makeReqId()
-  const started = msNow()
+  const id = dReqId()
+  const started = dMsNow()
   const u = typeof url === "string" ? url : String(url?.toString?.() ?? url)
   const method = (opts?.method || "GET").toUpperCase()
   const headers = opts?.headers ? (opts.headers instanceof Headers ? headersToObj(opts.headers) : opts.headers) : {}
-  const meta = { id, t: nowIso(), kind: info?.kind || "fetch", method, url: u, headers, info: info || null }
+  const meta = { id, t: dNowIso(), kind: info?.kind || "fetch", method, url: u, headers, info: info || null }
 
-  console.groupCollapsed(`[${meta.kind}] -> ${method} ${u}`)
-  console.log("meta", meta)
+  dGroup(`[${meta.kind}] -> ${method} ${u}`, meta)
+  dLog(meta.kind, "request_meta", meta)
 
   let res
   let text = ""
   try {
     res = await fetch(url, opts)
-    const ended = msNow()
+    const ended = dMsNow()
     meta.status = res.status
     meta.ok = res.ok
     meta.ms = Math.round(ended - started)
     meta.resHeaders = headersToObj(res.headers)
-    console.log("response_meta", { status: meta.status, ok: meta.ok, ms: meta.ms, headers: meta.resHeaders })
+    dLog(meta.kind, "response_meta", { status: meta.status, ok: meta.ok, ms: meta.ms, headers: meta.resHeaders })
 
     text = await res.text().catch(() => "")
     meta.bodyLen = text.length
-    const preview = text.length > 1200 ? text.slice(0, 1200) + `…(trunc ${text.length - 1200})` : text
-    console.log("response_text_preview", preview)
+    const preview = text.length > 2000 ? text.slice(0, 2000) + `…(trunc ${text.length - 2000})` : text
+    dLog(meta.kind, "response_text_preview", preview)
 
     const parsed = parseMaybeJson(text)
-    if (parsed && parsed.raw === undefined) console.log("response_json", parsed)
-    console.groupEnd()
+    if (parsed && parsed.raw === undefined) dLog(meta.kind, "response_json", parsed)
 
+    dGroupEnd()
     return { id, res, text, data: parsed, meta }
   } catch (err) {
-    const ended = msNow()
+    const ended = dMsNow()
     meta.ms = Math.round(ended - started)
     meta.error = { message: String(err?.message || err), stack: err?.stack || null }
-    console.error("fetch_error", meta)
-    console.groupEnd()
+    dErr(meta.kind, "fetch_error", meta)
+    dGroupEnd()
     throw err
   }
 }
 
 async function exchangeCodeForTokenViaApi(code, state) {
-  const res = await fetch(`${GATEWAY_BASE}/oauth/exchange`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ code, state }),
-  })
+  const id = dReqId()
+  const started = dMsNow()
+  dGroup("[login] exchangeCodeForTokenViaApi start", { id, statePresent: Boolean(state), codePresent: Boolean(code), codeLen: String(code || "").length })
+  const { res, data, meta } = await fetchDebug(
+    `${GATEWAY_BASE}/oauth/exchange`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code, state })
+    },
+    { kind: "oauth_exchange", statePresent: Boolean(state), codeLen: String(code || "").length }
+  )
 
-  const text = await res.text().catch(() => "")
-  let data = null
-  try { data = text ? JSON.parse(text) : null } catch { data = { raw: text } }
+  const ms = Math.round(dMsNow() - started)
+  dLog("login", "exchange_response", { id, ms, status: res.status, ok: res.ok, hasToken: Boolean(data?.access_token) })
 
   if (!res.ok || !data?.access_token) {
-    throw new Error(`token_exchange_failed ${res.status} ${JSON.stringify(data)}`)
+    dErr("login", "token_exchange_failed", { id, status: meta.status, body: data })
+    dGroupEnd()
+    throw new Error(`token_exchange_failed ${res.status} ${dSafeJson(data)}`)
   }
 
+  dGroupEnd()
   return String(data.access_token)
 }
 
 async function loginDiscordActivity() {
+  const loginId = dReqId()
+  const started = dMsNow()
+
   const clientId = getDiscordClientId()
-  if (!clientId) throw new Error("missing_client_id")
+  dGroup("[login] loginDiscordActivity start", { loginId, clientId, origin: location.origin, href: location.href, search: location.search })
+  if (!clientId) {
+    dErr("login", "missing_client_id", { loginId })
+    dGroupEnd()
+    throw new Error("missing_client_id")
+  }
 
+  dLog("login", "sdk_construct", { loginId, clientId })
   const discordSdk = new DiscordSDK(clientId)
-  await discordSdk.ready()
 
-  const state = makeReqId()
-  try { sessionStorage.setItem("oauth_state", state) } catch { }
+  dLog("login", "sdk_ready_wait", { loginId })
+  await discordSdk.ready()
+  dLog("login", "sdk_ready_ok", { loginId })
+
+  const state = dReqId()
+  try { sessionStorage.setItem("oauth_state", state) } catch (e) { dWarn("login", "sessionStorage_set_oauth_state_failed", { loginId, err: String(e?.message || e) }) }
 
   const redirectUri = `https://1224715390362324992.discordsays.com/oauth/callback`
+  dLog("login", "authorize_call", { loginId, redirectUri, scopes: ["identify", "guilds.members.read"], prompt: "none" })
 
-  const { code } = await discordSdk.commands.authorize({
-    client_id: clientId,
-    response_type: "code",
-    state: "",
-    prompt: "none",
-    redirect_uri: redirectUri,
-    scope: ["identify", "guilds.members.read"]
-  })
+  let code = ""
+  try {
+    const authzStarted = dMsNow()
+    const out = await discordSdk.commands.authorize({
+      client_id: clientId,
+      response_type: "code",
+      state: "",
+      prompt: "none",
+      redirect_uri: redirectUri,
+      scope: ["identify", "guilds.members.read"]
+    })
+    code = out?.code ? String(out.code) : ""
+    dLog("login", "authorize_ok", { loginId, ms: Math.round(dMsNow() - authzStarted), codePresent: Boolean(code), codeLen: code.length })
+  } catch (e) {
+    dErr("login", "authorize_failed", { loginId, message: String(e?.message || e), stack: e?.stack || null })
+    dGroupEnd()
+    throw e
+  }
 
   const access_token = await exchangeCodeForTokenViaApi(code, state)
+  dLog("login", "exchange_ok", { loginId, tokenLen: access_token.length })
 
-  const auth = await discordSdk.commands.authenticate({ access_token })
-  if (!auth?.user) throw new Error("authenticate_failed")
+  let auth = null
+  try {
+    const authStarted = dMsNow()
+    dLog("login", "authenticate_call", { loginId })
+    auth = await discordSdk.commands.authenticate({ access_token })
+    dLog("login", "authenticate_ok", { loginId, ms: Math.round(dMsNow() - authStarted), hasUser: Boolean(auth?.user), hasAccessToken: Boolean(auth?.access_token) })
+  } catch (e) {
+    dErr("login", "authenticate_failed_call", { loginId, message: String(e?.message || e), stack: e?.stack || null })
+    dGroupEnd()
+    throw e
+  }
+
+  if (!auth?.user) {
+    dErr("login", "authenticate_failed_no_user", { loginId, authKeys: auth ? Object.keys(auth) : null })
+    dGroupEnd()
+    throw new Error("authenticate_failed")
+  }
 
   const u = {
     id: auth.user.id,
@@ -241,15 +324,20 @@ async function loginDiscordActivity() {
   const guildId = discordSdk.guildId ? String(discordSdk.guildId) : ""
   const channelId = discordSdk.channelId ? String(discordSdk.channelId) : ""
 
+  dLog("login", "sdk_context", { loginId, guildId, channelId, hasGuildId: Boolean(guildId), hasChannelId: Boolean(channelId) })
+
   setActivityUser(u)
   setActivityAuth({
     accessToken: access_token,
     guildId,
     channelId,
     clientId,
-    at: nowIso()
+    at: dNowIso()
   })
 
+  const ms = Math.round(dMsNow() - started)
+  dLog("login", "login_done", { loginId, ms, user: { id: u.id, username: u.username, hasAvatar: Boolean(u.avatar) } })
+  dGroupEnd()
   return u
 }
 
@@ -267,14 +355,14 @@ async function getUserIdForAction(inDiscord) {
 }
 
 async function pingBackend(inDiscord) {
-  const reqId = makeReqId()
+  const reqId = dReqId()
   const user = await getUserForPayload(inDiscord)
 
   const payload = {
     type: "PING",
     payload: {
       from: "activity",
-      at: nowIso(),
+      at: dNowIso(),
       reqId,
       user
     }
@@ -290,19 +378,19 @@ async function pingBackend(inDiscord) {
     { kind: "proxy_ping", payloadPreview: payload }
   )
 
-  if (!res.ok) throw new Error(`PING failed: ${meta.status} ${safeJson(data)}`)
+  if (!res.ok) throw new Error(`PING failed: ${meta.status} ${dSafeJson(data)}`)
   return data
 }
 
 async function sessionStartBackend(inDiscord) {
-  const reqId = makeReqId()
+  const reqId = dReqId()
   const userId = await getUserIdForAction(inDiscord)
 
   const payload = {
     type: "SESSION_START",
     payload: {
       from: "activity",
-      at: nowIso(),
+      at: dNowIso(),
       reqId,
       userId: userId || null
     }
@@ -318,19 +406,19 @@ async function sessionStartBackend(inDiscord) {
     { kind: "proxy_session_start", payloadPreview: payload }
   )
 
-  if (!res.ok) throw new Error(`SESSION_START failed: ${meta.status} ${safeJson(data)}`)
+  if (!res.ok) throw new Error(`SESSION_START failed: ${meta.status} ${dSafeJson(data)}`)
   return data
 }
 
 async function sessionPauseBackend(inDiscord) {
-  const reqId = makeReqId()
+  const reqId = dReqId()
   const userId = await getUserIdForAction(inDiscord)
 
   const payload = {
     type: "SESSION_PAUSE",
     payload: {
       from: "activity",
-      at: nowIso(),
+      at: dNowIso(),
       reqId,
       userId: userId || null
     }
@@ -346,19 +434,19 @@ async function sessionPauseBackend(inDiscord) {
     { kind: "proxy_session_pause", payloadPreview: payload }
   )
 
-  if (!res.ok) throw new Error(`SESSION_PAUSE failed: ${meta.status} ${safeJson(data)}`)
+  if (!res.ok) throw new Error(`SESSION_PAUSE failed: ${meta.status} ${dSafeJson(data)}`)
   return data
 }
 
 async function resetBoardBackend(inDiscord) {
-  const reqId = makeReqId()
+  const reqId = dReqId()
   const userId = await getUserIdForAction(inDiscord)
 
   const payload = {
     type: "RESET_BOARD",
     payload: {
       from: "activity",
-      at: nowIso(),
+      at: dNowIso(),
       reqId,
       userId
     }
@@ -374,19 +462,19 @@ async function resetBoardBackend(inDiscord) {
     { kind: "proxy_reset_board", payloadPreview: payload }
   )
 
-  if (!res.ok) throw new Error(`RESET_BOARD failed: ${meta.status} ${safeJson(data)}`)
+  if (!res.ok) throw new Error(`RESET_BOARD failed: ${meta.status} ${dSafeJson(data)}`)
   return data
 }
 
 async function snapshotBackend(inDiscord, region = null) {
-  const reqId = makeReqId()
+  const reqId = dReqId()
   const userId = await getUserIdForAction(inDiscord)
 
   const payload = {
     type: "SNAPSHOT_CREATE",
     payload: {
       from: "activity",
-      at: nowIso(),
+      at: dNowIso(),
       reqId,
       userId,
       region: region || null
@@ -403,12 +491,12 @@ async function snapshotBackend(inDiscord, region = null) {
     { kind: "proxy_snapshot_create", payloadPreview: payload }
   )
 
-  if (!res.ok) throw new Error(`SNAPSHOT_CREATE failed: ${meta.status} ${safeJson(data)}`)
+  if (!res.ok) throw new Error(`SNAPSHOT_CREATE failed: ${meta.status} ${dSafeJson(data)}`)
   return data
 }
 
 async function placePixelBackend(inDiscord, x, y, colorHexOrInt) {
-  const reqId = makeReqId()
+  const reqId = dReqId()
   const user = await getUserForPayload(inDiscord)
   const color = hexToIntColor(colorHexOrInt)
 
@@ -416,7 +504,7 @@ async function placePixelBackend(inDiscord, x, y, colorHexOrInt) {
     type: "PLACE_PIXEL",
     payload: {
       from: "activity",
-      at: nowIso(),
+      at: dNowIso(),
       reqId,
       userId: user?.id,
       username: user?.username ?? user?.global_name ?? user?.displayName ?? null,
@@ -436,18 +524,18 @@ async function placePixelBackend(inDiscord, x, y, colorHexOrInt) {
     { kind: "proxy_place_pixel", payloadPreview: payload }
   )
 
-  if (!res.ok) throw new Error(`PLACE_PIXEL failed: ${meta.status} ${safeJson(data)}`)
+  if (!res.ok) throw new Error(`PLACE_PIXEL failed: ${meta.status} ${dSafeJson(data)}`)
   return data
 }
 
 async function resolveUserHashBackend(userHash) {
-  const reqId = makeReqId()
+  const reqId = dReqId()
 
   const payload = {
     type: "RESOLVE_USERHASH",
     payload: {
       from: "activity",
-      at: nowIso(),
+      at: dNowIso(),
       reqId,
       userHash: String(userHash)
     }
@@ -463,7 +551,7 @@ async function resolveUserHashBackend(userHash) {
     { kind: "proxy_resolve_userhash", payloadPreview: payload }
   )
 
-  if (!res.ok) throw new Error(`RESOLVE_USERHASH failed: ${meta.status} ${safeJson(data)}`)
+  if (!res.ok) throw new Error(`RESOLVE_USERHASH failed: ${meta.status} ${dSafeJson(data)}`)
   return data
 }
 
@@ -490,7 +578,7 @@ async function getBoardBackend(inDiscord, since, limit = 200, pageToken = null, 
     { kind: "get_board", inDiscord, since: since ?? null, limit, pageToken: pageToken || null, extra }
   )
 
-  if (!res.ok) throw new Error(`GET_BOARD failed: ${meta.status} ${safeJson(data)}`)
+  if (!res.ok) throw new Error(`GET_BOARD failed: ${meta.status} ${dSafeJson(data)}`)
   return data
 }
 
@@ -672,10 +760,28 @@ async function run() {
   const $ = (id) => document.getElementById(id)
   const logLine = (msg) => { $("status").textContent = msg }
 
+  dGroup("[run] bootstrap", {
+    inDiscord,
+    origin: location.origin,
+    href: location.href,
+    ua: navigator.userAgent,
+    hasLocalStorage: (() => { try { localStorage.setItem("_t", "1"); localStorage.removeItem("_t"); return true } catch { return false } })(),
+    hasSessionStorage: (() => { try { sessionStorage.setItem("_t", "1"); sessionStorage.removeItem("_t"); return true } catch { return false } })(),
+    hasCryptoUuid: Boolean(globalThis.crypto?.randomUUID),
+    hasDecompressionStream: typeof DecompressionStream !== "undefined"
+  })
+  dGroupEnd()
+
   async function attemptLogin() {
+    const attemptId = dReqId()
+    const started = dMsNow()
+    dGroup("[login] attemptLogin start", { attemptId, inDiscord })
+
     if (!inDiscord) {
+      dWarn("login", "not_in_discord", { attemptId })
       setUserSlotState({ type: "error", onRetry: attemptLogin })
       logLine("Open inside Discord to authenticate.")
+      dGroupEnd()
       return
     }
 
@@ -684,15 +790,36 @@ async function run() {
     try {
       const cached = getActivityUser()
       const cachedAuth = getActivityAuth()
+
+      dLog("login", "cache_check", {
+        attemptId,
+        hasCachedUser: Boolean(cached?.id),
+        hasCachedToken: Boolean(cachedAuth?.accessToken),
+        cachedUser: cached ? { id: cached.id, username: cached.username, hasAvatar: Boolean(cached.avatar) } : null,
+        cachedAuth: cachedAuth ? { hasToken: Boolean(cachedAuth.accessToken), guildId: cachedAuth.guildId || "", channelId: cachedAuth.channelId || "", clientId: cachedAuth.clientId || "", at: cachedAuth.at || "" } : null
+      })
+
       if (cached?.id && cachedAuth?.accessToken) {
+        dLog("login", "cache_hit_using_cached", { attemptId })
         setUserSlotState({ type: "user", user: cached })
+        logLine("✅ Logged in (cached).")
+        dGroupEnd()
         return
       }
+
+      dLog("login", "cache_miss_start_fresh_login", { attemptId })
+      logLine("⏳ Logging in...")
       const u = await loginDiscordActivity()
       setUserSlotState({ type: "user", user: u })
+      logLine("✅ Logged in.")
+      dLog("login", "attemptLogin_success", { attemptId, ms: Math.round(dMsNow() - started), user: { id: u.id, username: u.username } })
+      dGroupEnd()
     } catch (e) {
-      logLine(String(e?.message || e))
+      const msg = String(e?.message || e)
+      dErr("login", "attemptLogin_failed", { attemptId, ms: Math.round(dMsNow() - started), message: msg, stack: e?.stack || null })
+      logLine(msg)
       setUserSlotState({ type: "error", onRetry: attemptLogin })
+      dGroupEnd()
     }
   }
 
@@ -758,7 +885,9 @@ async function run() {
   const ctx = canvas.getContext("2d", { alpha: false })
 
   function setSessionState(next) {
+    const before = sessionState
     sessionState = String(next || "").toUpperCase() === "PAUSED" ? "PAUSED" : "RUNNING"
+    dLog("ui", "setSessionState", { before, after: sessionState })
     const wrap = canvas?.parentElement
     if (wrap) wrap.style.opacity = sessionState === "PAUSED" ? "0.9" : "1"
     canvas.style.cursor = sessionState === "PAUSED" ? "not-allowed" : "crosshair"
@@ -809,13 +938,9 @@ async function run() {
     return `rgba(${r3},${g3},${b3},${a})`
   }
 
-  function idx(x, y) {
-    return y * board.w + x
-  }
+  function idx(x, y) { return y * board.w + x }
 
-  function getColorAt(x, y) {
-    return board.pixels[idx(x, y)] ?? 1
-  }
+  function getColorAt(x, y) { return board.pixels[idx(x, y)] ?? 1 }
 
   function getMetaAt(x, y) {
     const i = idx(x, y)
@@ -826,11 +951,14 @@ async function run() {
     const W = Math.max(1, Math.floor(Number(w || 0)))
     const H = Math.max(1, Math.floor(Number(h || 0)))
     if (W === board.w && H === board.h && board.pixels?.length === W * H) return
+
     const oldW = board.w
     const oldH = board.h
     const oldP = board.pixels
     const oldHh = board.metaHash
     const oldT = board.metaTs
+
+    dLog("board", "ensureBoardSize_resize", { from: { w: oldW, h: oldH }, to: { w: W, h: H } })
 
     board.w = W
     board.h = H
@@ -862,6 +990,7 @@ async function run() {
   let hoverResolveToken = 0
 
   function clearBoardLocal() {
+    dLog("board", "clearBoardLocal", { pixels: board?.pixels?.length || 0, metaHash: board?.metaHash?.length || 0, metaTs: board?.metaTs?.length || 0 })
     if (board?.pixels?.length) board.pixels.fill(1)
     if (board?.metaHash?.length) board.metaHash.fill(0)
     if (board?.metaTs?.length) board.metaTs.fill(0)
@@ -877,6 +1006,8 @@ async function run() {
     const w = Math.min(sz, Math.max(0, maxW - ox))
     const h = Math.min(sz, Math.max(0, board.h - oy))
     if (w <= 0 || h <= 0) return
+
+    if (DEBUG_DEEP) dLog("chunk", "applyChunkRgba", { cx, cy, sz, bytesLen: bytes?.length || 0, ox, oy, w, h })
 
     for (let y = 0; y < h; y++) {
       const srcRow = y * sz * 4
@@ -903,6 +1034,8 @@ async function run() {
     const h = Math.min(sz, Math.max(0, board.h - oy))
     if (w <= 0 || h <= 0) return
 
+    if (DEBUG_DEEP) dLog("chunk", "applyChunkMeta", { cx, cy, sz, bytesLen: bytes?.length || 0, ox, oy, w, h })
+
     const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
     for (let y = 0; y < h; y++) {
       const srcRow = y * sz * 8
@@ -921,6 +1054,8 @@ async function run() {
   async function applyServerChunk(c, wantMeta) {
     const cx = Number(c?.cx || 0)
     const cy = Number(c?.cy || 0)
+
+    if (DEBUG_DEEP) dLog("chunk", "applyServerChunk", { cx, cy, wantMeta, hasData: Boolean(c?.dataGzipB64), hasMeta: Boolean(c?.metaGzipB64), updatedAt: c?.updatedAt || null, id: c?.id || null })
 
     if (c?.dataGzipB64) {
       const raw = await gunzipBytes(b64ToBytes(c.dataGzipB64))
@@ -989,6 +1124,8 @@ async function run() {
     state.hoverHash = m.userHash >>> 0
     state.hoverTs = m.ts >>> 0
 
+    if (DEBUG_DEEP) dLog("hover", "resolveHoverOwner_meta", { token, x: p.x, y: p.y, userHash: m.userHash >>> 0, ts: m.ts >>> 0 })
+
     if (!m.userHash) {
       setHoverUserText("-", "-")
       return
@@ -996,6 +1133,7 @@ async function run() {
 
     const cached = userHashCache.get(m.userHash)
     if (cached) {
+      if (DEBUG_DEEP) dLog("hover", "resolveHoverOwner_cache_hit", { token, userHash: m.userHash >>> 0, cached })
       setHoverUserText(cached.username || "-", cached.discordId || "-")
       return
     }
@@ -1027,9 +1165,11 @@ async function run() {
       }
 
       userHashCache.set(m.userHash, norm)
+      if (DEBUG_DEEP) dLog("hover", "resolveHoverOwner_resolved", { token, userHash: m.userHash >>> 0, norm, raw: data })
       setHoverUserText(norm.username || "-", norm.discordId || "-")
-    } catch {
+    } catch (e) {
       if (token !== hoverResolveToken) return
+      dWarn("hover", "resolveHoverOwner_failed", { token, userHash: m.userHash >>> 0, err: String(e?.message || e) })
       setHoverUserText("-", "-")
     }
   }
@@ -1038,12 +1178,14 @@ async function run() {
     e.preventDefault()
     const before = screenToWorld(e.clientX, e.clientY)
     const factor = e.deltaY > 0 ? 0.9 : 1.1
+    const prevZoom = view.zoom
     view.zoom = clamp(view.zoom * factor, 2, 80)
     const after = screenToWorld(e.clientX, e.clientY)
     const dxWorld = after.x - before.x
     const dyWorld = after.y - before.y
     view.panX += dxWorld * view.zoom
     view.panY += dyWorld * view.zoom
+    dLog("ui", "wheel_zoom", { prevZoom, nextZoom: view.zoom, panX: view.panX, panY: view.panY })
     render()
   }, { passive: false })
 
@@ -1051,23 +1193,28 @@ async function run() {
     canvas.setPointerCapture(e.pointerId)
     state.isDragging = true
     state.dragStart = { x: e.clientX, y: e.clientY, panX: view.panX, panY: view.panY }
+    if (DEBUG_DEEP) dLog("ui", "pointerdown", { pointerId: e.pointerId, x: e.clientX, y: e.clientY, dragStart: state.dragStart })
   })
 
   canvas.addEventListener("pointermove", (e) => {
     const prev = state.hover ? `${state.hover.x},${state.hover.y}` : ""
     state.hover = worldPixelFromEvent(e)
     const next = state.hover ? `${state.hover.x},${state.hover.y}` : ""
+
     if (state.isDragging) {
       const dx = e.clientX - state.dragStart.x
       const dy = e.clientY - state.dragStart.y
       view.panX = state.dragStart.panX + dx
       view.panY = state.dragStart.panY + dy
+      if (DEBUG_DEEP) dLog("ui", "drag_pan", { dx, dy, panX: view.panX, panY: view.panY })
     }
+
     render()
     if (prev !== next) resolveHoverOwner(state.hover)
   })
 
-  canvas.addEventListener("pointerup", () => {
+  canvas.addEventListener("pointerup", (e) => {
+    if (DEBUG_DEEP) dLog("ui", "pointerup", { pointerId: e.pointerId })
     state.isDragging = false
     state.dragStart = null
   })
@@ -1077,15 +1224,12 @@ async function run() {
   let placing = false
 
   async function applyUpdateChunks(chunks, wantMeta) {
-    console.groupCollapsed(`[apply_update_chunks] n=${chunks?.length ?? 0}`)
-    console.log("time", nowIso())
-    console.log("chunkSize", chunkSize)
-    console.log("wantMeta", wantMeta)
+    dGroup(`[apply_update_chunks] n=${chunks?.length ?? 0}`, { time: dNowIso(), chunkSize, wantMeta })
     if (chunks?.length) {
-      console.log("first", chunks[0])
-      console.log("last", chunks[chunks.length - 1])
+      dLog("chunks", "first", chunks[0])
+      dLog("chunks", "last", chunks[chunks.length - 1])
     }
-    console.groupEnd()
+    dGroupEnd()
 
     for (const c of (chunks || [])) {
       await applyServerChunk(c, wantMeta)
@@ -1112,21 +1256,13 @@ async function run() {
   }
 
   async function quickGetBoardOnce(reason = "manual", wantMeta = true) {
-    const started = msNow()
+    const started = dMsNow()
     const sinceBase = lastSince
     logLine("⏳ Fetching latest chunks...")
 
     const vp = chunkViewportParams()
 
-    console.groupCollapsed("[quick_get_board_once] start")
-    console.log("time", nowIso())
-    console.log("reason", reason)
-    console.log("sinceBase", sinceBase)
-    console.log("limit", 200)
-    console.log("chunkSize", chunkSize)
-    console.log("wantMeta", wantMeta)
-    console.log("viewport", vp)
-    console.groupEnd()
+    dGroup("[quick_get_board_once] start", { time: dNowIso(), reason, sinceBase, limit: 200, chunkSize, wantMeta, viewport: vp })
 
     let pageToken = null
     let maxSeen = sinceBase
@@ -1138,27 +1274,29 @@ async function run() {
       pages++
       const extra = { ...vp }
       if (wantMeta) extra.includeMeta = "true"
+
       const data = await getBoardBackend(inDiscord, sinceBase, 200, pageToken, extra)
       const chunks = Array.isArray(data?.chunks) ? data.chunks : []
       totalChunks += chunks.length
 
-      console.groupCollapsed(`[quick_get_board_once] page ${pages}`)
-      console.log("time", nowIso())
-      console.log("since_used", sinceBase)
-      console.log("sinceEcho", data?.sinceEcho ?? null)
-      console.log("sinceEffectiveEcho", data?.sinceEffectiveEcho ?? null)
-      console.log("serverNow", data?.serverNow ?? null)
-      console.log("skewMs", data?.skewMs ?? null)
-      console.log("returned", data?.returned ?? chunks.length)
-      console.log("chunks_len", chunks.length)
-      console.log("stoppedForSize", data?.stoppedForSize ?? null)
-      console.log("approxBytes", data?.approxBytes ?? null)
-      console.log("nextPageToken", data?.nextPageToken || null)
+      dGroup(`[quick_get_board_once] page ${pages}`, {
+        time: dNowIso(),
+        since_used: sinceBase,
+        sinceEcho: data?.sinceEcho ?? null,
+        sinceEffectiveEcho: data?.sinceEffectiveEcho ?? null,
+        serverNow: data?.serverNow ?? null,
+        skewMs: data?.skewMs ?? null,
+        returned: data?.returned ?? chunks.length,
+        chunks_len: chunks.length,
+        stoppedForSize: data?.stoppedForSize ?? null,
+        approxBytes: data?.approxBytes ?? null,
+        nextPageToken: data?.nextPageToken || null
+      })
       if (chunks.length) {
-        console.log("first_chunk", chunks[0])
-        console.log("last_chunk", chunks[chunks.length - 1])
+        dLog("board", "first_chunk", chunks[0])
+        dLog("board", "last_chunk", chunks[chunks.length - 1])
       }
-      console.groupEnd()
+      dGroupEnd()
 
       if (chunks.length) {
         await applyUpdateChunks(chunks, wantMeta)
@@ -1175,16 +1313,9 @@ async function run() {
 
     lastSince = maxSeen
 
-    const ms = Math.round(msNow() - started)
-    console.groupCollapsed("[quick_get_board_once] done")
-    console.log("time", nowIso())
-    console.log("ms", ms)
-    console.log("pages", pages)
-    console.log("totalChunks", totalChunks)
-    console.log("changed", changed)
-    console.log("lastSince_after", lastSince)
-    console.log("board", { w: board.w, h: board.h, chunkSize })
-    console.groupEnd()
+    const ms = Math.round(dMsNow() - started)
+    dGroup("[quick_get_board_once] done", { time: dNowIso(), ms, pages, totalChunks, changed, lastSince_after: lastSince, board: { w: board.w, h: board.h, chunkSize } })
+    dGroupEnd()
 
     if (changed) {
       logLine("✅ Updated.")
@@ -1199,22 +1330,16 @@ async function run() {
 
   async function fullReloadFromServerless() {
     logLine("⏳ Reloading board from serverless...")
-    console.groupCollapsed("[full_reload_from_serverless] start")
-    console.log("time", nowIso())
-    console.log("lastSince_before", lastSince)
-    console.log("board_before", { w: board.w, h: board.h, chunkSize, colors: board.colors, cooldownMs: board.cooldownMs })
-    console.groupEnd()
+    dGroup("[full_reload_from_serverless] start", { time: dNowIso(), lastSince_before: lastSince, board_before: { w: board.w, h: board.h, chunkSize, colors: board.colors, cooldownMs: board.cooldownMs } })
+    dGroupEnd()
 
     clearBoardLocal()
     lastSince = new Date(0).toISOString()
 
     await quickGetBoardOnce("full_reload", true)
 
-    console.groupCollapsed("[full_reload_from_serverless] done")
-    console.log("time", nowIso())
-    console.log("board_after", { w: board.w, h: board.h, chunkSize, colors: board.colors, cooldownMs: board.cooldownMs })
-    console.log("lastSince_after", lastSince)
-    console.groupEnd()
+    dGroup("[full_reload_from_serverless] done", { time: dNowIso(), board_after: { w: board.w, h: board.h, chunkSize, colors: board.colors, cooldownMs: board.cooldownMs }, lastSince_after: lastSince })
+    dGroupEnd()
 
     logLine("✅ Board reloaded.")
     $("fit").click()
@@ -1241,32 +1366,28 @@ async function run() {
     const picked = palette[state.selectedColor]
     const colorInt = hexToIntColor(picked)
 
-    console.groupCollapsed(`[ui_click_place] ${p.x},${p.y}`)
-    console.log("time", nowIso())
-    console.log("inDiscord", inDiscord)
-    console.log("sessionState", sessionState)
-    console.log("selectedColorId", state.selectedColor)
-    console.log("selectedColorHex", picked)
-    console.log("selectedColorInt", colorInt >>> 0)
-    console.log("board", { w: board.w, h: board.h, chunkSize, colors: board.colors, cooldownMs: board.cooldownMs })
-    console.log("view", { ...view })
-    console.log("hover", state.hover)
-    console.groupEnd()
+    dGroup(`[ui_click_place] ${p.x},${p.y}`, {
+      time: dNowIso(),
+      inDiscord,
+      sessionState,
+      selectedColorId: state.selectedColor,
+      selectedColorHex: picked,
+      selectedColorInt: colorInt >>> 0,
+      board: { w: board.w, h: board.h, chunkSize, colors: board.colors, cooldownMs: board.cooldownMs },
+      view: { ...view },
+      hover: state.hover
+    })
+    dGroupEnd()
 
     try {
       const rr = await placePixelBackend(inDiscord, p.x, p.y, picked)
-      console.groupCollapsed(`[place_pixel_result] ${p.x},${p.y}`)
-      console.log("time", nowIso())
-      console.log("result", rr)
-      console.groupEnd()
+      dGroup(`[place_pixel_result] ${p.x},${p.y}`, { time: dNowIso(), result: rr })
+      dGroupEnd()
 
       logLine(`✅ Place requested @ ${p.x},${p.y}. Syncing from server...`)
       await quickGetBoardOnce("after_place_pixel", true)
     } catch (err) {
-      console.groupCollapsed(`[place_pixel_error] ${p.x},${p.y}`)
-      console.log("time", nowIso())
-      console.error(err)
-      console.groupEnd()
+      dErr("place", "place_pixel_error", { time: dNowIso(), message: String(err?.message || err), stack: err?.stack || null })
       logLine(String(err?.message || err))
     } finally {
       placing = false
@@ -1290,11 +1411,7 @@ async function run() {
       b.disabled = sessionState === "PAUSED"
       b.onclick = () => {
         if (sessionState === "PAUSED") return
-        console.groupCollapsed(`[palette_select] ${i}`)
-        console.log("time", nowIso())
-        console.log("prev", state.selectedColor)
-        console.log("next", i)
-        console.groupEnd()
+        dLog("ui", "palette_select", { time: dNowIso(), prev: state.selectedColor, next: i })
         state.selectedColor = i
         buildPalette()
         render()
@@ -1305,9 +1422,11 @@ async function run() {
 
   $("fit").onclick = () => {
     const fitZoom = Math.min(canvas.width / board.w, canvas.height / board.h)
+    const prevZoom = view.zoom
     view.zoom = clamp(Math.floor(fitZoom), 2, 80)
     view.panX = (canvas.width - board.w * view.zoom) / 2
     view.panY = (canvas.height - board.h * view.zoom) / 2
+    dLog("ui", "fit", { prevZoom, nextZoom: view.zoom, panX: view.panX, panY: view.panY, board: { w: board.w, h: board.h } })
     render()
   }
 
@@ -1321,10 +1440,7 @@ async function run() {
     try {
       await quickGetBoardOnce("reload_button", true)
     } catch (e) {
-      console.groupCollapsed("[reload_button_error]")
-      console.log("time", nowIso())
-      console.error(e)
-      console.groupEnd()
+      dErr("ui", "reload_button_error", { time: dNowIso(), message: String(e?.message || e), stack: e?.stack || null })
       logLine(String(e?.message || e))
     } finally {
       if (b) {
@@ -1365,10 +1481,7 @@ async function run() {
         await snapshotBackend(inDiscord, null)
         logLine("✅ Snapshot requested.")
       } catch (e) {
-        console.groupCollapsed("[snapshot_error]")
-        console.log("time", nowIso())
-        console.error(e)
-        console.groupEnd()
+        dErr("ui", "snapshot_error", { time: dNowIso(), message: String(e?.message || e), stack: e?.stack || null })
         logLine(String(e?.message || e))
       } finally {
         snapBtn.disabled = false
@@ -1380,10 +1493,7 @@ async function run() {
   $("clear").onclick = () => {
     clearBoardLocal()
     logLine("🧹 Cleared locally.")
-    console.groupCollapsed("[clear_local]")
-    console.log("time", nowIso())
-    console.log("board", { w: board.w, h: board.h, pixels: board.pixels?.length, metaHash: board.metaHash?.length, metaTs: board.metaTs?.length })
-    console.groupEnd()
+    dLog("ui", "clear_local", { time: dNowIso(), board: { w: board.w, h: board.h, pixels: board.pixels?.length, metaHash: board.metaHash?.length, metaTs: board.metaTs?.length } })
     render()
     resolveHoverOwner(state.hover)
   }
@@ -1400,10 +1510,7 @@ async function run() {
         await fullReloadFromServerless()
         logLine("✅ Board reset.")
       } catch (e) {
-        console.groupCollapsed("[reset_board_error]")
-        console.log("time", nowIso())
-        console.error(e)
-        console.groupEnd()
+        dErr("ui", "reset_board_error", { time: dNowIso(), message: String(e?.message || e), stack: e?.stack || null })
         logLine(String(e?.message || e))
       } finally {
         resetSessionBtn.disabled = false
@@ -1422,16 +1529,10 @@ async function run() {
         logLine("⏳ Session start...")
         const data = await sessionStartBackend(inDiscord)
         setSessionState("RUNNING")
-        console.groupCollapsed("[session_start_result]")
-        console.log("time", nowIso())
-        console.log("result", data)
-        console.groupEnd()
+        dLog("session", "session_start_result", { time: dNowIso(), result: data })
         logLine(`✅ Session started.${data?.ok === false ? " (server returned ok=false)" : ""}`)
       } catch (e) {
-        console.groupCollapsed("[session_start_error]")
-        console.log("time", nowIso())
-        console.error(e)
-        console.groupEnd()
+        dErr("session", "session_start_error", { time: dNowIso(), message: String(e?.message || e), stack: e?.stack || null })
         logLine(String(e?.message || e))
       } finally {
         startBtn.disabled = false
@@ -1450,16 +1551,10 @@ async function run() {
         logLine("⏳ Session pause...")
         const data = await sessionPauseBackend(inDiscord)
         setSessionState("PAUSED")
-        console.groupCollapsed("[session_pause_result]")
-        console.log("time", nowIso())
-        console.log("result", data)
-        console.groupEnd()
+        dLog("session", "session_pause_result", { time: dNowIso(), result: data })
         logLine(`✅ Session paused.${data?.ok === false ? " (server returned ok=false)" : ""}`)
       } catch (e) {
-        console.groupCollapsed("[session_pause_error]")
-        console.log("time", nowIso())
-        console.error(e)
-        console.groupEnd()
+        dErr("session", "session_pause_error", { time: dNowIso(), message: String(e?.message || e), stack: e?.stack || null })
         logLine(String(e?.message || e))
       } finally {
         pauseBtn.disabled = false
@@ -1480,6 +1575,7 @@ async function run() {
         const data = await pingBackend(inDiscord)
         pingOut.textContent = JSON.stringify(data, null, 2)
       } catch (err) {
+        dErr("ui", "ping_error", { time: dNowIso(), message: String(err?.message || err), stack: err?.stack || null })
         pingOut.textContent = `Erreur: ${err?.message ?? String(err)}`
       } finally {
         pingBtn.disabled = false
@@ -1494,18 +1590,11 @@ async function run() {
   ;(async () => {
     try {
       logLine("⏳ Loading board from server...")
-      console.groupCollapsed("[startup_load_board] start")
-      console.log("time", nowIso())
-      console.groupEnd()
+      dLog("startup", "startup_load_board_start", { time: dNowIso() })
       await fullReloadFromServerless()
-      console.groupCollapsed("[startup_load_board] done")
-      console.log("time", nowIso())
-      console.groupEnd()
+      dLog("startup", "startup_load_board_done", { time: dNowIso() })
     } catch (e) {
-      console.groupCollapsed("[startup_load_board_error]")
-      console.log("time", nowIso())
-      console.error(e)
-      console.groupEnd()
+      dErr("startup", "startup_load_board_error", { time: dNowIso(), message: String(e?.message || e), stack: e?.stack || null })
       logLine(String(e?.message || "⚠️ server /board unreachable"))
       $("fit").click()
       render()
@@ -1525,7 +1614,7 @@ async function run() {
         let pages = 0
         let chunksTotal = 0
 
-        const started = msNow()
+        const started = dMsNow()
         const vp = chunkViewportParams()
 
         do {
@@ -1550,23 +1639,15 @@ async function run() {
         lastSince = maxSeen
 
         if (changed) {
-          const ms = Math.round(msNow() - started)
-          console.groupCollapsed("[poll_board_changed]")
-          console.log("time", nowIso())
-          console.log("ms", ms)
-          console.log("pages", pages)
-          console.log("chunksTotal", chunksTotal)
-          console.log("lastSince", lastSince)
-          console.log("board", { w: board.w, h: board.h, chunkSize })
-          console.groupEnd()
+          const ms = Math.round(dMsNow() - started)
+          dLog("poll", "poll_board_changed", { time: dNowIso(), ms, pages, chunksTotal, lastSince, board: { w: board.w, h: board.h, chunkSize } })
           render()
           resolveHoverOwner(state.hover)
+        } else {
+          if (DEBUG_DEEP) dLog("poll", "poll_no_change", { time: dNowIso(), pages, lastSince })
         }
       } catch (e) {
-        console.groupCollapsed("[poll_board_error]")
-        console.log("time", nowIso())
-        console.error(e)
-        console.groupEnd()
+        dErr("poll", "poll_board_error", { time: dNowIso(), message: String(e?.message || e), stack: e?.stack || null })
       }
       await new Promise((r3) => setTimeout(r3, 1000))
     }
