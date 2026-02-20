@@ -192,17 +192,17 @@ async function exchangeCodeForTokenViaApi(code, state) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ code, state }),
-  });
+  })
 
-  const text = await res.text().catch(() => "");
-  let data = null;
-  try { data = text ? JSON.parse(text) : null; } catch { data = { raw: text }; }
+  const text = await res.text().catch(() => "")
+  let data = null
+  try { data = text ? JSON.parse(text) : null } catch { data = { raw: text } }
 
   if (!res.ok || !data?.access_token) {
-    throw new Error(`token_exchange_failed ${res.status} ${JSON.stringify(data)}`);
+    throw new Error(`token_exchange_failed ${res.status} ${JSON.stringify(data)}`)
   }
 
-  return String(data.access_token);
+  return String(data.access_token)
 }
 
 async function loginDiscordActivity() {
@@ -212,8 +212,8 @@ async function loginDiscordActivity() {
   const discordSdk = new DiscordSDK(clientId)
   await discordSdk.ready()
 
-  const state = makeReqId();
-  try { sessionStorage.setItem("oauth_state", state); } catch {}
+  const state = makeReqId()
+  try { sessionStorage.setItem("oauth_state", state) } catch { }
 
   const redirectUri = `https://1224715390362324992.discordsays.com/oauth/callback`
 
@@ -606,6 +606,14 @@ function guessSquareSizeByStride(n, stride) {
   const s = Math.floor(Math.sqrt(Math.max(0, Math.floor(n / Math.max(1, stride)))))
   if (s > 0 && s * s * stride === n) return s
   return null
+}
+
+function maxIso(a, b) {
+  const A = a ? String(a) : ""
+  const B = b ? String(b) : ""
+  if (!A) return B || A
+  if (!B) return A
+  return (A > B) ? A : B
 }
 
 async function run() {
@@ -1106,33 +1114,33 @@ async function run() {
 
   async function quickGetBoardOnce(reason = "manual", wantMeta = true) {
     const started = msNow()
-    const since0 = lastSince
+    const sinceBase = lastSince
     logLine("⏳ Fetching latest chunks...")
 
     console.groupCollapsed("[quick_get_board_once] start")
     console.log("time", nowIso())
     console.log("reason", reason)
-    console.log("since", since0)
+    console.log("sinceBase", sinceBase)
     console.log("limit", 500)
     console.log("chunkSize", chunkSize)
     console.log("wantMeta", wantMeta)
     console.groupEnd()
 
     let pageToken = null
-    let maxUpdatedAt = lastSince
+    let maxSeen = sinceBase
     let changed = false
     let pages = 0
     let totalChunks = 0
 
     do {
       pages++
-      const data = await getBoardBackend(inDiscord, lastSince, 500, pageToken, wantMeta ? { includeMeta: "true" } : {})
+      const data = await getBoardBackend(inDiscord, sinceBase, 500, pageToken, wantMeta ? { includeMeta: "true" } : {})
       const chunks = Array.isArray(data?.chunks) ? data.chunks : []
       totalChunks += chunks.length
 
       console.groupCollapsed(`[quick_get_board_once] page ${pages}`)
       console.log("time", nowIso())
-      console.log("since_used", lastSince)
+      console.log("since_used", sinceBase)
       console.log("sinceEcho", data?.sinceEcho ?? null)
       console.log("sinceEffectiveEcho", data?.sinceEffectiveEcho ?? null)
       console.log("serverNow", data?.serverNow ?? null)
@@ -1152,13 +1160,14 @@ async function run() {
       }
 
       for (const c of chunks) {
-        if (c?.updatedAt && String(c.updatedAt) > String(maxUpdatedAt)) maxUpdatedAt = String(c.updatedAt)
+        if (c?.updatedAt) maxSeen = maxIso(maxSeen, c.updatedAt)
       }
+      if (data?.serverNow) maxSeen = maxIso(maxSeen, data.serverNow)
 
       pageToken = data?.nextPageToken || null
     } while (pageToken)
 
-    lastSince = maxUpdatedAt
+    lastSince = maxSeen
 
     const ms = Math.round(msNow() - started)
     console.groupCollapsed("[quick_get_board_once] done")
@@ -1223,7 +1232,6 @@ async function run() {
 
     placing = true
 
-    const user = await getUserForPayload(inDiscord)
     const picked = palette[state.selectedColor]
     const colorInt = hexToIntColor(picked)
 
@@ -1234,7 +1242,6 @@ async function run() {
     console.log("selectedColorId", state.selectedColor)
     console.log("selectedColorHex", picked)
     console.log("selectedColorInt", colorInt >>> 0)
-    console.log("user", user)
     console.log("board", { w: board.w, h: board.h, chunkSize, colors: board.colors, cooldownMs: board.cooldownMs })
     console.log("view", { ...view })
     console.log("hover", state.hover)
@@ -1505,8 +1512,9 @@ async function run() {
     polling = true
     while (polling) {
       try {
+        const sinceBase = lastSince
         let pageToken = null
-        let maxUpdatedAt = lastSince
+        let maxSeen = sinceBase
         let changed = false
         let pages = 0
         let chunksTotal = 0
@@ -1515,7 +1523,7 @@ async function run() {
 
         do {
           pages++
-          const data = await getBoardBackend(inDiscord, lastSince, 200, pageToken, { includeMeta: "true" })
+          const data = await getBoardBackend(inDiscord, sinceBase, 200, pageToken, { includeMeta: "true" })
           const chunks = Array.isArray(data?.chunks) ? data.chunks : []
           chunksTotal += chunks.length
 
@@ -1523,13 +1531,16 @@ async function run() {
             await applyUpdateChunks(chunks, true)
             changed = true
           }
+
           for (const c of chunks) {
-            if (c?.updatedAt && String(c.updatedAt) > String(maxUpdatedAt)) maxUpdatedAt = String(c.updatedAt)
+            if (c?.updatedAt) maxSeen = maxIso(maxSeen, c.updatedAt)
           }
+          if (data?.serverNow) maxSeen = maxIso(maxSeen, data.serverNow)
+
           pageToken = data?.nextPageToken || null
         } while (pageToken)
 
-        lastSince = maxUpdatedAt
+        lastSince = maxSeen
 
         if (changed) {
           const ms = Math.round(msNow() - started)
