@@ -117,7 +117,7 @@ function hexToIntColor(colorHex) {
 }
 
 async function exchangeCodeForTokenViaApi(code) {
-  const res = await fetch(`${GATEWAY_BASE}/api/token`, {
+  const res = await fetch(`${GATEWAY_BASE}/oauth/exchange`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ code })
