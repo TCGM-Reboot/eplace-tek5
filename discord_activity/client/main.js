@@ -77,7 +77,7 @@ function readWebUserFromUrl() {
     const json = b64urlToUtf8(p)
     const user = JSON.parse(json)
     if (!user?.id) return null
-    try { localStorage.setItem("web_user_cache", JSON.stringify(user)) } catch {}
+    try { localStorage.setItem("web_user_cache", JSON.stringify(user)) } catch { }
     u.searchParams.delete("web_user")
     history.replaceState(null, "", u.pathname + (u.searchParams.toString() ? `?${u.searchParams.toString()}` : "") + u.hash)
     return user
@@ -99,13 +99,13 @@ function getCachedWebUser() {
 }
 
 async function clearLocalAuth() {
-  try { localStorage.removeItem("activity_user") } catch {}
-  try { localStorage.removeItem("web_user_cache") } catch {}
+  try { localStorage.removeItem("activity_user") } catch { }
+  try { localStorage.removeItem("web_user_cache") } catch { }
 }
 
 async function logoutEverywhere() {
   await clearLocalAuth()
-  try { await api("/api/web/logout", { method: "POST" }) } catch {}
+  try { await api("/api/web/logout", { method: "POST" }) } catch { }
   location.reload()
 }
 
@@ -305,7 +305,7 @@ async function getUserIdForAction(inDiscord) {
   try {
     const wu = await getWebUser()
     if (wu?.id) return String(wu.id)
-  } catch {}
+  } catch { }
   return null
 }
 
@@ -674,11 +674,11 @@ async function run() {
       try {
         const wu = await getWebUser()
         if (wu?.id) {
-          try { localStorage.setItem("web_user_cache", JSON.stringify(wu)) } catch {}
+          try { localStorage.setItem("web_user_cache", JSON.stringify(wu)) } catch { }
           setUserSlotState({ type: "user", user: wu })
           return
         }
-      } catch {}
+      } catch { }
 
       setUserSlotState({ type: "outside" })
       return
@@ -936,37 +936,41 @@ async function run() {
 
     const cached = userHashCache.get(m.userHash)
     if (cached) {
-      setHoverUserText(cached.username || "-", cached.userId || "-")
+      setHoverUserText(cached.username || "-", cached.discordId || "-")
       return
     }
 
-    setHoverUserText("Loading…", String(m.userHash))
+    setHoverUserText("Loading…", "-")
 
     try {
       const data = await resolveUserHashBackend(m.userHash)
       if (token !== hoverResolveToken) return
 
-      const userId =
-        data?.userId ||
+      const discordId =
         data?.discordId ||
+        data?.userId ||
         data?.id ||
         data?.user?.id ||
         ""
 
       const username =
-        data?.username ||
         data?.discordUsername ||
+        data?.username ||
         data?.user?.username ||
         data?.user?.global_name ||
         data?.user?.name ||
         ""
 
-      const norm = { userId: userId ? String(userId) : "", username: username ? String(username) : "" }
+      const norm = {
+        discordId: discordId ? String(discordId) : "",
+        username: username ? String(username) : ""
+      }
+
       userHashCache.set(m.userHash, norm)
-      setHoverUserText(norm.username || "-", norm.userId || "-")
+      setHoverUserText(norm.username || "-", norm.discordId || "-")
     } catch {
       if (token !== hoverResolveToken) return
-      setHoverUserText("-", String(m.userHash))
+      setHoverUserText("-", "-")
     }
   }
 
@@ -1239,17 +1243,17 @@ async function run() {
 
   buildPalette()
 
-  ;(async () => {
-    try {
-      logLine("⏳ Loading board from serverless...")
-      await reloadBoardFromServerless()
-    } catch (e) {
-      logLine(String(e?.message || "⚠️ serverless /board unreachable"))
-      $("fit").click()
-      render()
-      resolveHoverOwner(state.hover)
-    }
-  })()
+    ; (async () => {
+      try {
+        logLine("⏳ Loading board from serverless...")
+        await reloadBoardFromServerless()
+      } catch (e) {
+        logLine(String(e?.message || "⚠️ serverless /board unreachable"))
+        $("fit").click()
+        render()
+        resolveHoverOwner(state.hover)
+      }
+    })()
 
   async function pollBoard() {
     if (polling) return
