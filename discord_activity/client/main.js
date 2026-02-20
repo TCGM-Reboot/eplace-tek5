@@ -1,7 +1,7 @@
 import "./style.css"
 import { DiscordSDK } from "@discord/embedded-app-sdk"
 
-console.log("MAIN.JS VERSION = BOARD_V3_HOVER_USER_CORSFIX_V3_ADMIN_BTNS_VISIBLE", new Date().toISOString())
+console.log("MAIN.JS VERSION = BOARD_V3_HOVER_USER_CORSFIX_V4_SESSION_START_PAUSE", new Date().toISOString())
 
 const GATEWAY_BASE = "https://1224715390362324992.discordsays.com/gcp"
 
@@ -295,7 +295,7 @@ async function getUserForPayload(inDiscord) {
   return { id: u.id, username: u.username || "", avatar: u.avatar || "" }
 }
 
-async function getUserIdForReset(inDiscord) {
+async function getUserIdForAction(inDiscord) {
   if (inDiscord) {
     const u = await getActivityUser()
     return u?.id ? String(u.id) : null
@@ -334,9 +334,59 @@ async function pingBackend(inDiscord) {
   return data
 }
 
+async function sessionStartBackend(inDiscord) {
+  const reqId = makeReqId()
+  const userId = await getUserIdForAction(inDiscord)
+
+  const res = await fetch(`${GATEWAY_BASE}/proxy`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      type: "SESSION_START",
+      payload: {
+        from: "activity",
+        at: new Date().toISOString(),
+        reqId,
+        userId: userId || null
+      }
+    })
+  })
+
+  const text = await res.text().catch(() => "")
+  let data = null
+  try { data = text ? JSON.parse(text) : null } catch { data = { raw: text } }
+  if (!res.ok) throw new Error(`SESSION_START failed: ${res.status} ${JSON.stringify(data)}`)
+  return data
+}
+
+async function sessionPauseBackend(inDiscord) {
+  const reqId = makeReqId()
+  const userId = await getUserIdForAction(inDiscord)
+
+  const res = await fetch(`${GATEWAY_BASE}/proxy`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      type: "SESSION_PAUSE",
+      payload: {
+        from: "activity",
+        at: new Date().toISOString(),
+        reqId,
+        userId: userId || null
+      }
+    })
+  })
+
+  const text = await res.text().catch(() => "")
+  let data = null
+  try { data = text ? JSON.parse(text) : null } catch { data = { raw: text } }
+  if (!res.ok) throw new Error(`SESSION_PAUSE failed: ${res.status} ${JSON.stringify(data)}`)
+  return data
+}
+
 async function resetBoardBackend(inDiscord) {
   const reqId = makeReqId()
-  const userId = await getUserIdForReset(inDiscord)
+  const userId = await getUserIdForAction(inDiscord)
   const payload = {
     type: "RESET_BOARD",
     payload: {
@@ -378,7 +428,7 @@ async function resetBoardBackend(inDiscord) {
 
 async function snapshotBackend(inDiscord, region = null) {
   const reqId = makeReqId()
-  const userId = await getUserIdForReset(inDiscord)
+  const userId = await getUserIdForAction(inDiscord)
 
   const payload = {
     type: "SNAPSHOT_CREATE",
@@ -522,10 +572,6 @@ function guessSquareSize(n) {
   return null
 }
 
-function u32le(bytes, off) {
-  return (bytes[off + 0] | (bytes[off + 1] << 8) | (bytes[off + 2] << 16) | (bytes[off + 3] << 24)) >>> 0
-}
-
 async function run() {
   const app = document.querySelector("#app")
   if (!app) throw new Error("Missing #app root element")
@@ -599,7 +645,6 @@ async function run() {
   `
 
   const inDiscord = isProbablyDiscordActivity()
-
   const $ = (id) => document.getElementById(id)
   const logLine = (msg) => { $("status").textContent = msg }
 
@@ -610,52 +655,6 @@ async function run() {
       if (u?.id) headers.set("x-user-id", u.id)
     }
     return api(path, { ...opts, headers })
-  }
-
-  function setHidden(id, hidden) {
-    const el = $(id)
-    if (!el) return
-    el.style.display = hidden ? "none" : ""
-  }
-
-  function setDisabled(id, disabled, titleIfDisabled = "") {
-    const el = $(id)
-    if (!el) return
-    el.disabled = Boolean(disabled)
-    if (disabled) {
-      if (titleIfDisabled) el.title = titleIfDisabled
-      el.style.opacity = "0.55"
-      el.style.cursor = "not-allowed"
-    } else {
-      el.title = ""
-      el.style.opacity = ""
-      el.style.cursor = ""
-    }
-  }
-
-  function applyRoleUI(isAdmin) {
-    window.__canPlace = true
-
-    setHidden("reload", false)
-    setHidden("fit", false)
-    setHidden("reset", false)
-    setHidden("clear", false)
-    setHidden("start", false)
-    setHidden("pause", false)
-    setHidden("resetSession", false)
-    setHidden("snapshot", false)
-
-    const lockMsg = "Admins only"
-
-    setDisabled("start", !isAdmin, lockMsg)
-    setDisabled("pause", !isAdmin, lockMsg)
-    setDisabled("resetSession", !isAdmin, lockMsg)
-    setDisabled("snapshot", !isAdmin, lockMsg)
-    setDisabled("reset", !isAdmin, lockMsg)
-    setDisabled("clear", !isAdmin, lockMsg)
-
-    const brand = document.querySelector(".brandTitle")
-    if (brand) brand.textContent = isAdmin ? "r/place viewer (ADMIN)" : "r/place viewer"
   }
 
   async function attemptLogin() {
@@ -706,7 +705,8 @@ async function run() {
   const r = await apiWithUser("/api/user/isAdmin")
   const isAdmin = Boolean(r.data?.isAdmin)
   window.__isAdmin = isAdmin
-  applyRoleUI(isAdmin)
+  const brand = document.querySelector(".brandTitle")
+  if (brand) brand.textContent = isAdmin ? "r/place viewer (ADMIN)" : "r/place viewer"
 
   const palette = [
     "#000000", "#ffffff", "#ff0000", "#00ff00", "#0000ff", "#ffff00", "#ff00ff", "#00ffff",
@@ -792,12 +792,6 @@ async function run() {
     return { userHash: board.metaHash[i] >>> 0, ts: board.metaTs[i] >>> 0 }
   }
 
-  function setMetaAt(x, y, userHash, ts) {
-    const i = idx(x, y)
-    board.metaHash[i] = userHash >>> 0
-    board.metaTs[i] = ts >>> 0
-  }
-
   function ensureBoardSize(w, h) {
     const W = Math.max(1, Math.floor(Number(w || 0)))
     const H = Math.max(1, Math.floor(Number(h || 0)))
@@ -825,9 +819,8 @@ async function run() {
     const ox = cx * sz
     const oy = cy * sz
     const maxW = board.w
-    const maxH = board.h
     const w = Math.min(sz, Math.max(0, maxW - ox))
-    const h = Math.min(sz, Math.max(0, maxH - oy))
+    const h = Math.min(sz, Math.max(0, board.h - oy))
     if (w <= 0 || h <= 0) return
     for (let y = 0; y < h; y++) {
       const srcRow = y * sz
@@ -1090,6 +1083,7 @@ async function run() {
 
   $("reload").onclick = async () => {
     const b = $("reload")
+    const prev = b ? b.textContent : "Reload board"
     if (b) {
       b.disabled = true
       b.textContent = "Reloading..."
@@ -1101,13 +1095,12 @@ async function run() {
     } finally {
       if (b) {
         b.disabled = false
-        b.textContent = "Reload board"
+        b.textContent = prev
       }
     }
   }
 
   $("reset").onclick = async () => {
-    if (!window.__isAdmin) return
     const b = $("reset")
     const prev = b ? b.textContent : "Reset"
     if (b) {
@@ -1135,7 +1128,6 @@ async function run() {
   const snapBtn = $("snapshot")
   if (snapBtn) {
     snapBtn.onclick = async () => {
-      if (!window.__isAdmin) return
       const prev = snapBtn.textContent
       snapBtn.disabled = true
       snapBtn.textContent = "Snapshotting..."
@@ -1156,7 +1148,6 @@ async function run() {
   }
 
   $("clear").onclick = () => {
-    if (!window.__isAdmin) return
     clearBoardLocal()
     logLine("🧹 Cleared locally.")
     render()
@@ -1166,7 +1157,6 @@ async function run() {
   const resetSessionBtn = $("resetSession")
   if (resetSessionBtn) {
     resetSessionBtn.onclick = async () => {
-      if (!window.__isAdmin) return
       const prevText = resetSessionBtn.textContent
       resetSessionBtn.disabled = true
       resetSessionBtn.textContent = "Resetting..."
@@ -1182,6 +1172,46 @@ async function run() {
       } finally {
         resetSessionBtn.disabled = false
         resetSessionBtn.textContent = prevText
+      }
+    }
+  }
+
+  const startBtn = $("start")
+  if (startBtn) {
+    startBtn.onclick = async () => {
+      const prevText = startBtn.textContent
+      startBtn.disabled = true
+      startBtn.textContent = "Starting..."
+      try {
+        console.log(JSON.stringify({ t: new Date().toISOString(), event: "session:start:ui_click", inDiscord }))
+        logLine("⏳ Session start...")
+        const data = await sessionStartBackend(inDiscord)
+        logLine(`✅ Session started.${data?.ok === false ? " (server returned ok=false)" : ""}`)
+      } catch (e) {
+        logLine(String(e?.message || e))
+      } finally {
+        startBtn.disabled = false
+        startBtn.textContent = prevText
+      }
+    }
+  }
+
+  const pauseBtn = $("pause")
+  if (pauseBtn) {
+    pauseBtn.onclick = async () => {
+      const prevText = pauseBtn.textContent
+      pauseBtn.disabled = true
+      pauseBtn.textContent = "Pausing..."
+      try {
+        console.log(JSON.stringify({ t: new Date().toISOString(), event: "session:pause:ui_click", inDiscord }))
+        logLine("⏳ Session pause...")
+        const data = await sessionPauseBackend(inDiscord)
+        logLine(`✅ Session paused.${data?.ok === false ? " (server returned ok=false)" : ""}`)
+      } catch (e) {
+        logLine(String(e?.message || e))
+      } finally {
+        pauseBtn.disabled = false
+        pauseBtn.textContent = prevText
       }
     }
   }
