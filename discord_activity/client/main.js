@@ -1225,6 +1225,42 @@ async function run() {
   let lastSince = new Date(0).toISOString()
   let placing = false
   let syncInFlight = null
+  const pendingLocalPlaces = new Map()
+
+  function optimisticPlaceLocal(inDiscord, x, y, colorId) {
+    const i = idx(x, y)
+    const prev = {
+      color: board.pixels[i] ?? 1,
+      userHash: board.metaHash[i] >>> 0,
+      ts: board.metaTs[i] >>> 0
+    }
+
+    pendingLocalPlaces.set(`${x},${y}`, prev)
+
+    board.pixels[i] = colorId
+    board.metaHash[i] = 0
+    board.metaTs[i] = (Math.floor(Date.now() / 1000) >>> 0)
+
+    const u = getActivityUser()
+    if (u?.id) setHoverUserText(u.username || "-", String(u.id))
+    render()
+  }
+
+  function rollbackOptimisticPlace(x, y) {
+    const k = `${x},${y}`
+    const prev = pendingLocalPlaces.get(k)
+    if (!prev) return
+    const i = idx(x, y)
+    board.pixels[i] = prev.color
+    board.metaHash[i] = prev.userHash >>> 0
+    board.metaTs[i] = prev.ts >>> 0
+    pendingLocalPlaces.delete(k)
+    render()
+  }
+
+  function clearPendingOptimisticPlace(x, y) {
+    pendingLocalPlaces.delete(`${x},${y}`)
+  }
 
   async function applyUpdateChunks(chunks, wantMeta) {
     dGroup(`[apply_update_chunks] n=${chunks?.length ?? 0}`, { time: dNowIso(), chunkSize, wantMeta })
@@ -1359,6 +1395,7 @@ async function run() {
     dGroupEnd()
 
     clearBoardLocal()
+    pendingLocalPlaces.clear()
     lastSince = new Date(0).toISOString()
 
     await syncBoardOnce("full_reload", true)
@@ -1404,13 +1441,17 @@ async function run() {
     dGroupEnd()
 
     try {
+      optimisticPlaceLocal(inDiscord, p.x, p.y, state.selectedColor)
+      logLine(`✅ Placed locally @ ${p.x},${p.y}. Sending to proxy...`)
       const rr = await placePixelBackend(inDiscord, p.x, p.y, picked)
+      clearPendingOptimisticPlace(p.x, p.y)
       dGroup(`[place_pixel_result] ${p.x},${p.y}`, { time: dNowIso(), result: rr })
       dGroupEnd()
 
       logLine(`✅ Place requested @ ${p.x},${p.y}. Syncing from server...`)
       await syncBoardOnce("after_place_pixel", true)
     } catch (err) {
+      rollbackOptimisticPlace(p.x, p.y)
       dErr("place", "place_pixel_error", { time: dNowIso(), message: String(err?.message || err), stack: err?.stack || null })
       logLine(String(err?.message || err))
     } finally {
@@ -1511,6 +1552,7 @@ async function run() {
 
   bindClick("clear", () => {
     clearBoardLocal()
+    pendingLocalPlaces.clear()
     logLine("🧹 Cleared locally.")
     dLog("ui", "clear_local", { time: dNowIso(), board: { w: board.w, h: board.h, pixels: board.pixels?.length, metaHash: board.metaHash?.length, metaTs: board.metaTs?.length } })
     render()
