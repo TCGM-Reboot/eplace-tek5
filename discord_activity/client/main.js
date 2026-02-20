@@ -224,7 +224,7 @@ async function pingBackend(inDiscord) {
 async function sessionStartBackend(inDiscord) {
   const reqId = makeReqId()
   const userId = await getUserIdForAction(inDiscord)
-  const admin = await requireAdminAuthForWorker(inDiscord)
+  // const admin = await requireAdminAuthForWorker(inDiscord)
 
   const res = await fetch(`${GATEWAY_BASE}/proxy`, {
     method: "POST",
@@ -252,7 +252,7 @@ async function sessionStartBackend(inDiscord) {
 async function sessionPauseBackend(inDiscord) {
   const reqId = makeReqId()
   const userId = await getUserIdForAction(inDiscord)
-  const admin = await requireAdminAuthForWorker(inDiscord)
+  // const admin = await requireAdminAuthForWorker(inDiscord)
 
   const res = await fetch(`${GATEWAY_BASE}/proxy`, {
     method: "POST",
@@ -280,7 +280,7 @@ async function sessionPauseBackend(inDiscord) {
 async function resetBoardBackend(inDiscord) {
   const reqId = makeReqId()
   const userId = await getUserIdForAction(inDiscord)
-  const admin = await requireAdminAuthForWorker(inDiscord)
+  // const admin = await requireAdminAuthForWorker(inDiscord)
 
   const payload = {
     type: "RESET_BOARD",
@@ -326,7 +326,7 @@ async function resetBoardBackend(inDiscord) {
 async function snapshotBackend(inDiscord, region = null) {
   const reqId = makeReqId()
   const userId = await getUserIdForAction(inDiscord)
-  const admin = await requireAdminAuthForWorker(inDiscord)
+ // const admin = await requireAdminAuthForWorker(inDiscord)
 
   const payload = {
     type: "SNAPSHOT_CREATE",
