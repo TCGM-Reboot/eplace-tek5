@@ -36,13 +36,6 @@ function showFatal(err) {
 window.addEventListener("error", (e) => showFatal(e.error || e.message))
 window.addEventListener("unhandledrejection", (e) => showFatal(e.reason))
 
-function isProbablyDiscordActivity() {
-  const qp = new URLSearchParams(location.search)
-  if (qp.get("frame_id") || qp.get("instance_id")) return true
-  if (window?.DiscordNative) return true
-  return false
-}
-
 function avatarUrl(user) {
   if (!user) return ""
   if (user.avatar_url) return user.avatar_url
@@ -89,6 +82,10 @@ function getActivityAuth() {
   }
 }
 
+function clearActivityAuth() {
+  try { localStorage.removeItem("activity_auth") } catch { }
+}
+
 function setActivityUser(u) {
   try { localStorage.setItem("activity_user", JSON.stringify(u || {})) } catch { }
 }
@@ -101,6 +98,10 @@ function getActivityUser() {
   } catch {
     return null
   }
+}
+
+function clearActivityUser() {
+  try { localStorage.removeItem("activity_user") } catch { }
 }
 
 function makeReqId() {
@@ -139,13 +140,15 @@ async function exchangeCodeForTokenViaProxy(code) {
   return String(tok)
 }
 
-async function loginDiscordActivity() {
-  const clientId = getDiscordClientId()
-  if (!clientId) throw new Error("missing_client_id")
-
+async function ensureDiscordSdkReady(clientId) {
   const discordSdk = new DiscordSDK(clientId)
-  await discordSdk.ready()
+  const readyPromise = discordSdk.ready()
+  const timeoutPromise = new Promise((_, rej) => setTimeout(() => rej(new Error("discord_sdk_ready_timeout")), 8000))
+  await Promise.race([readyPromise, timeoutPromise])
+  return discordSdk
+}
 
+async function loginDiscordActivity(discordSdk, clientId) {
   const { code } = await discordSdk.commands.authorize({
     client_id: clientId,
     response_type: "code",
@@ -157,12 +160,12 @@ async function loginDiscordActivity() {
   const access_token = await exchangeCodeForTokenViaProxy(code)
 
   const auth = await discordSdk.commands.authenticate({ access_token })
-  if (!auth?.user) throw new Error("authenticate_failed")
+  if (!auth?.user?.id) throw new Error("authenticate_failed")
 
   const u = {
-    id: auth.user.id,
-    username: auth.user.global_name || auth.user.username,
-    avatar: auth.user.avatar,
+    id: String(auth.user.id),
+    username: String(auth.user.global_name || auth.user.username || "Unknown"),
+    avatar: auth.user.avatar || "",
     avatar_url: auth.user.avatar ? `https://cdn.discordapp.com/avatars/${auth.user.id}/${auth.user.avatar}.png?size=128` : ""
   }
 
@@ -417,9 +420,15 @@ function setUserSlotState(state) {
   const slot = document.getElementById("userSlot")
   if (!slot) return
   slot.innerHTML = ""
+  slot.style.display = "flex"
+  slot.style.alignItems = "center"
+  slot.style.justifyContent = "flex-end"
+  slot.style.gap = "10px"
+  slot.style.marginLeft = "auto"
 
   if (state?.type === "user") {
-    const user = state.user
+    const user = state.user || {}
+
     const wrap = document.createElement("div")
     wrap.className = "userSlot"
 
@@ -449,6 +458,7 @@ function setUserSlotState(state) {
     card.appendChild(av)
     card.appendChild(txt)
     wrap.appendChild(card)
+
     slot.appendChild(wrap)
     return
   }
@@ -460,15 +470,25 @@ function setUserSlotState(state) {
     const msg = document.createElement("div")
     msg.className = "mini"
     msg.style.opacity = "0.9"
-    msg.textContent = "Login failed"
+    msg.textContent = state.message || "Login failed"
 
     const b = document.createElement("button")
     b.className = "btn"
     b.textContent = "Retry"
     b.onclick = state.onRetry
 
+    const c = document.createElement("button")
+    c.className = "btn"
+    c.textContent = "Clear"
+    c.onclick = () => {
+      clearActivityAuth()
+      clearActivityUser()
+      state.onRetry?.()
+    }
+
     wrap.appendChild(msg)
     wrap.appendChild(b)
+    wrap.appendChild(c)
     slot.appendChild(wrap)
     return
   }
@@ -518,7 +538,7 @@ async function run() {
           <div class="badge"></div>
           <div class="brandTitle">r/place AI ULYSSE viewer</div>
         </div>
-        <div id="userSlot"></div>
+        <div id="userSlot" style="margin-left:auto;"></div>
       </div>
 
       <div class="mainRow">
@@ -579,31 +599,43 @@ async function run() {
     </div>
   `
 
-  const inDiscord = isProbablyDiscordActivity()
+  const clientId = getDiscordClientId()
   const $ = (id) => document.getElementById(id)
   const logLine = (msg) => { $("status").textContent = msg }
 
+  let discordSdk = null
+  let inDiscord = false
+
   async function attemptLogin() {
-    if (!inDiscord) {
-      setUserSlotState({ type: "error", onRetry: attemptLogin })
-      logLine("Open inside Discord to authenticate.")
+    setUserSlotState({})
+
+    const cached = getActivityUser()
+    const cachedAuth = getActivityAuth()
+    if (cached?.id && cachedAuth?.accessToken) {
+      setUserSlotState({ type: "user", user: cached })
+      inDiscord = true
       return
     }
 
-    setUserSlotState({})
+    try {
+      discordSdk = await ensureDiscordSdkReady(clientId)
+      inDiscord = true
+    } catch (e) {
+      inDiscord = false
+      logLine("Open inside Discord to authenticate.")
+      setUserSlotState({ type: "error", message: "Open inside Discord", onRetry: attemptLogin })
+      return
+    }
 
     try {
-      const cached = getActivityUser()
-      const cachedAuth = getActivityAuth()
-      if (cached?.id && cachedAuth?.accessToken) {
-        setUserSlotState({ type: "user", user: cached })
-        return
-      }
-      const u = await loginDiscordActivity()
+      const u = await loginDiscordActivity(discordSdk, clientId)
       setUserSlotState({ type: "user", user: u })
+      logLine(`✅ Logged in as ${u.username}`)
     } catch (e) {
+      clearActivityAuth()
+      clearActivityUser()
       logLine(String(e?.message || e))
-      setUserSlotState({ type: "error", onRetry: attemptLogin })
+      setUserSlotState({ type: "error", message: "Login failed", onRetry: attemptLogin })
     }
   }
 
