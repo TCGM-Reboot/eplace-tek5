@@ -282,7 +282,6 @@ async function loginDiscordActivity() {
       response_type: "code",
       state: "",
       prompt: "none",
-      redirect_uri: redirectUri,
       scope: ["identify", "guilds.members.read"]
     })
     code = out?.code ? String(out.code) : ""
