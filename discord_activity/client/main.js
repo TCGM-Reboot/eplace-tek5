@@ -1,7 +1,7 @@
 import "./style.css"
 import { DiscordSDK } from "@discord/embedded-app-sdk"
 
-console.log("MAIN.JS VERSION = BOARD_V3_HOVER_USER_CORSFIX_V4_SESSION_START_PAUSE", new Date().toISOString())
+console.log("MAIN.JS VERSION = BOARD_V3_HOVER_USER_CORSFIX_V5_NO_API_ROUTES", new Date().toISOString())
 
 const GATEWAY_BASE = "https://1224715390362324992.discordsays.com/gcp"
 
@@ -43,15 +43,6 @@ function isProbablyDiscordActivity() {
   return false
 }
 
-async function api(path, opts = {}) {
-  const res = await fetch(path, { ...opts, credentials: "include" })
-  const text = await res.text().catch(() => "")
-  let data = null
-  try { data = text ? JSON.parse(text) : null } catch { data = { raw: text } }
-  console.log(JSON.stringify({ t: new Date().toISOString(), event: "api", path, method: (opts.method || "GET"), status: res.status, ok: res.ok, data }))
-  return { res, data }
-}
-
 function avatarUrl(user) {
   if (!user) return ""
   if (user.avatar_url) return user.avatar_url
@@ -59,175 +50,73 @@ function avatarUrl(user) {
   return ""
 }
 
-function b64urlToUtf8(str) {
-  const s2 = String(str || "").replaceAll("-", "+").replaceAll("_", "/")
-  const pad = s2.length % 4 === 2 ? "==" : s2.length % 4 === 3 ? "=" : s2.length % 4 === 1 ? "===" : ""
-  const b64 = s2 + pad
-  const bin = atob(b64)
-  const bytes = new Uint8Array(bin.length)
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
-  return new TextDecoder().decode(bytes)
+function hexToIntColor(colorHex) {
+  if (typeof colorHex === "number") return Number(colorHex) >>> 0
+  const s = String(colorHex || "").trim()
+  if (!s) return 0
+  if (s.startsWith("#")) return parseInt(s.slice(1), 16) >>> 0
+  if (s.startsWith("0x") || s.startsWith("0X")) return parseInt(s.slice(2), 16) >>> 0
+  return parseInt(s, 10) >>> 0
 }
 
-function readWebUserFromUrl() {
-  try {
-    const u = new URL(location.href)
-    const p = u.searchParams.get("web_user")
-    if (!p) return null
-    const json = b64urlToUtf8(p)
-    const user = JSON.parse(json)
-    if (!user?.id) return null
-    try { localStorage.setItem("web_user_cache", JSON.stringify(user)) } catch { }
-    u.searchParams.delete("web_user")
-    history.replaceState(null, "", u.pathname + (u.searchParams.toString() ? `?${u.searchParams.toString()}` : "") + u.hash)
-    return user
-  } catch {
-    return null
-  }
+function makeReqId() {
+  try { return crypto.randomUUID() } catch { return String(Date.now()) + "_" + Math.random().toString(16).slice(2) }
 }
 
-function getCachedWebUser() {
-  try {
-    const raw = localStorage.getItem("web_user_cache")
-    if (!raw) return null
-    const u = JSON.parse(raw)
-    if (!u?.id) return null
-    return u
-  } catch {
-    return null
-  }
+function b64ToBytes(b64) {
+  const bin = atob(String(b64 || ""))
+  const out = new Uint8Array(bin.length)
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i)
+  return out
 }
 
-async function clearLocalAuth() {
-  try { localStorage.removeItem("activity_user") } catch { }
-  try { localStorage.removeItem("activity_auth") } catch { }
-  try { localStorage.removeItem("web_user_cache") } catch { }
+async function gunzipBytes(bytes) {
+  if (!bytes || !bytes.length) return new Uint8Array(0)
+  if (typeof DecompressionStream === "undefined") throw new Error("gzip_not_supported")
+  const ds = new DecompressionStream("gzip")
+  const stream = new Blob([bytes]).stream().pipeThrough(ds)
+  const ab = await new Response(stream).arrayBuffer()
+  return new Uint8Array(ab)
 }
 
-async function logoutEverywhere() {
-  await clearLocalAuth()
-  try { await api("/api/web/logout", { method: "POST" }) } catch { }
-  location.reload()
+function guessSquareSize(n) {
+  const s = Math.floor(Math.sqrt(Math.max(0, n)))
+  if (s * s === n) return s
+  return null
 }
 
-function setUserSlotState(state) {
-  const slot = document.getElementById("userSlot")
-  if (!slot) return
-  slot.innerHTML = ""
-
-  if (state?.type === "user") {
-    const user = state.user
-    const wrap = document.createElement("div")
-    wrap.className = "userSlot"
-
-    const card = document.createElement("div")
-    card.className = "userCard"
-
-    const av = document.createElement("img")
-    av.className = "userAvatar"
-    av.alt = "avatar"
-    av.referrerPolicy = "no-referrer"
-    av.src = avatarUrl(user)
-
-    const txt = document.createElement("div")
-    txt.className = "userText"
-
-    const name = document.createElement("div")
-    name.className = "userName"
-    name.textContent = user.username || "Unknown"
-
-    const id = document.createElement("div")
-    id.className = "userId"
-    id.textContent = user.id ? String(user.id) : "-"
-
-    txt.appendChild(name)
-    txt.appendChild(id)
-
-    card.appendChild(av)
-    card.appendChild(txt)
-    wrap.appendChild(card)
-
-    const logout = document.createElement("button")
-    logout.className = "btn"
-    logout.style.marginLeft = "10px"
-    logout.textContent = "Logout"
-    logout.onclick = logoutEverywhere
-
-    wrap.appendChild(logout)
-    slot.appendChild(wrap)
-    return
-  }
-
-  if (state?.type === "outside") {
-    const wrap = document.createElement("div")
-    wrap.className = "userSlot"
-
-    const msg = document.createElement("div")
-    msg.className = "mini"
-    msg.style.opacity = "0.9"
-    msg.textContent = "Browser mode"
-
-    const b = document.createElement("button")
-    b.className = "btn"
-    b.textContent = "Login with Discord"
-    b.onclick = () => {
-      const returnTo = encodeURIComponent(location.pathname + location.search + location.hash)
-      location.href = `/api/web/login?returnTo=${returnTo}`
-    }
-
-    wrap.appendChild(msg)
-    wrap.appendChild(b)
-    slot.appendChild(wrap)
-    return
-  }
-
-  if (state?.type === "error") {
-    const wrap = document.createElement("div")
-    wrap.className = "userSlot"
-
-    const msg = document.createElement("div")
-    msg.className = "mini"
-    msg.style.opacity = "0.9"
-    msg.textContent = "Login failed"
-
-    const b = document.createElement("button")
-    b.className = "btn"
-    b.textContent = "Retry"
-    b.onclick = state.onRetry
-
-    const out = document.createElement("button")
-    out.className = "btn"
-    out.style.marginLeft = "10px"
-    out.textContent = "Logout"
-    out.onclick = logoutEverywhere
-
-    wrap.appendChild(msg)
-    wrap.appendChild(b)
-    wrap.appendChild(out)
-    slot.appendChild(wrap)
-    return
-  }
-
-  const wrap = document.createElement("div")
-  wrap.className = "userSlot"
-
-  const msg = document.createElement("div")
-  msg.className = "mini"
-  msg.style.opacity = "0.9"
-  msg.textContent = "Authenticating…"
-
-  wrap.appendChild(msg)
-  slot.appendChild(wrap)
-}
-
-function getClientIdFromEnvOrDom() {
-  try {
-    const envId = import.meta?.env?.VITE_DISCORD_CLIENT_ID
-    if (envId) return String(envId).trim()
-  } catch { }
+function getDiscordClientIdFromDom() {
   const meta = document.querySelector('meta[name="discord-client-id"]')
   const v = meta?.getAttribute("content")
   return v ? String(v).trim() : ""
+}
+
+function getDiscordClientIdFromEnv() {
+  try {
+    const v = import.meta?.env?.VITE_DISCORD_CLIENT_ID
+    return v ? String(v).trim() : ""
+  } catch {
+    return ""
+  }
+}
+
+async function getDiscordClientId() {
+  const fromWindow = (window && window.__DISCORD_CLIENT_ID) ? String(window.__DISCORD_CLIENT_ID).trim() : ""
+  if (fromWindow) return fromWindow
+  const fromEnv = getDiscordClientIdFromEnv()
+  if (fromEnv) return fromEnv
+  const fromMeta = getDiscordClientIdFromDom()
+  if (fromMeta) return fromMeta
+
+  try {
+    const r = await fetch(`${GATEWAY_BASE}/auth/config`, { method: "GET", mode: "cors", credentials: "omit", cache: "no-store" })
+    const t = await r.text().catch(() => "")
+    let d = null
+    try { d = t ? JSON.parse(t) : null } catch { d = null }
+    if (r.ok && d?.clientId) return String(d.clientId)
+  } catch { }
+
+  return ""
 }
 
 function setActivityAuth(auth) {
@@ -241,6 +130,16 @@ async function getActivityAuth() {
     const a = JSON.parse(raw)
     if (!a?.accessToken) return null
     return a
+  } catch {
+    return null
+  }
+}
+
+async function getActivityUser() {
+  try {
+    const raw = localStorage.getItem("activity_user")
+    if (!raw) return null
+    return JSON.parse(raw)
   } catch {
     return null
   }
@@ -265,22 +164,14 @@ async function oauthExchangeWithWorker(code) {
   return data
 }
 
-let discordSdk = null
-
-async function ensureDiscordSdk(clientId) {
-  if (discordSdk) return discordSdk
-  discordSdk = new DiscordSDK(clientId)
-  await discordSdk.ready()
-  return discordSdk
-}
-
 async function loginDiscordActivity() {
-  const clientId = getClientIdFromEnvOrDom()
+  const clientId = await getDiscordClientId()
   if (!clientId) throw new Error("missing_client_id")
 
-  const sdk = await ensureDiscordSdk(clientId)
+  const discordSdk = new DiscordSDK(clientId)
+  await discordSdk.ready()
 
-  const { code } = await sdk.commands.authorize({
+  const authz = await discordSdk.commands.authorize({
     client_id: clientId,
     response_type: "code",
     state: "",
@@ -288,9 +179,9 @@ async function loginDiscordActivity() {
     scope: ["identify", "guilds", "applications.commands"]
   })
 
-  const tokenData = await oauthExchangeWithWorker(code)
+  const tokenData = await oauthExchangeWithWorker(authz.code)
 
-  const auth = await sdk.commands.authenticate({ access_token: tokenData.access_token })
+  const auth = await discordSdk.commands.authenticate({ access_token: tokenData.access_token })
   if (!auth?.user) throw new Error("authenticate_failed")
 
   const u = {
@@ -300,8 +191,8 @@ async function loginDiscordActivity() {
     avatar_url: auth.user.avatar ? `https://cdn.discordapp.com/avatars/${auth.user.id}/${auth.user.avatar}.png?size=128` : ""
   }
 
-  const guildId = sdk.guildId ? String(sdk.guildId) : ""
-  const channelId = sdk.channelId ? String(sdk.channelId) : ""
+  const guildId = discordSdk.guildId ? String(discordSdk.guildId) : ""
+  const channelId = discordSdk.channelId ? String(discordSdk.channelId) : ""
 
   localStorage.setItem("activity_user", JSON.stringify(u))
   setActivityAuth({
@@ -318,35 +209,6 @@ async function loginDiscordActivity() {
   return u
 }
 
-async function getActivityUser() {
-  try {
-    const raw = localStorage.getItem("activity_user")
-    if (!raw) return null
-    return JSON.parse(raw)
-  } catch {
-    return null
-  }
-}
-
-async function getWebUser() {
-  const r = await api("/api/web/me")
-  if (!r.res.ok || !r.data?.user?.id) return null
-  return r.data.user
-}
-
-function hexToIntColor(colorHex) {
-  if (typeof colorHex === "number") return Number(colorHex) >>> 0
-  const s = String(colorHex || "").trim()
-  if (!s) return 0
-  if (s.startsWith("#")) return parseInt(s.slice(1), 16) >>> 0
-  if (s.startsWith("0x") || s.startsWith("0X")) return parseInt(s.slice(2), 16) >>> 0
-  return parseInt(s, 10) >>> 0
-}
-
-function makeReqId() {
-  try { return crypto.randomUUID() } catch { return String(Date.now()) + "_" + Math.random().toString(16).slice(2) }
-}
-
 async function getUserForPayload(inDiscord) {
   if (!inDiscord) return null
   const u = await getActivityUser()
@@ -355,17 +217,9 @@ async function getUserForPayload(inDiscord) {
 }
 
 async function getUserIdForAction(inDiscord) {
-  if (inDiscord) {
-    const u = await getActivityUser()
-    return u?.id ? String(u.id) : null
-  }
-  const cached = getCachedWebUser()
-  if (cached?.id) return String(cached.id)
-  try {
-    const wu = await getWebUser()
-    if (wu?.id) return String(wu.id)
-  } catch { }
-  return null
+  if (!inDiscord) return null
+  const u = await getActivityUser()
+  return u?.id ? String(u.id) : null
 }
 
 async function requireAdminAuthForWorker(inDiscord) {
@@ -630,26 +484,76 @@ async function getBoardBackend(inDiscord, since, limit = 200, pageToken = null, 
   return data
 }
 
-function b64ToBytes(b64) {
-  const bin = atob(String(b64 || ""))
-  const out = new Uint8Array(bin.length)
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i)
-  return out
-}
+function setUserSlotState(state) {
+  const slot = document.getElementById("userSlot")
+  if (!slot) return
+  slot.innerHTML = ""
 
-async function gunzipBytes(bytes) {
-  if (!bytes || !bytes.length) return new Uint8Array(0)
-  if (typeof DecompressionStream === "undefined") throw new Error("gzip_not_supported")
-  const ds = new DecompressionStream("gzip")
-  const stream = new Blob([bytes]).stream().pipeThrough(ds)
-  const ab = await new Response(stream).arrayBuffer()
-  return new Uint8Array(ab)
-}
+  if (state?.type === "user") {
+    const user = state.user
+    const wrap = document.createElement("div")
+    wrap.className = "userSlot"
 
-function guessSquareSize(n) {
-  const s = Math.floor(Math.sqrt(Math.max(0, n)))
-  if (s * s === n) return s
-  return null
+    const card = document.createElement("div")
+    card.className = "userCard"
+
+    const av = document.createElement("img")
+    av.className = "userAvatar"
+    av.alt = "avatar"
+    av.referrerPolicy = "no-referrer"
+    av.src = avatarUrl(user)
+
+    const txt = document.createElement("div")
+    txt.className = "userText"
+
+    const name = document.createElement("div")
+    name.className = "userName"
+    name.textContent = user.username || "Unknown"
+
+    const id = document.createElement("div")
+    id.className = "userId"
+    id.textContent = user.id ? String(user.id) : "-"
+
+    txt.appendChild(name)
+    txt.appendChild(id)
+
+    card.appendChild(av)
+    card.appendChild(txt)
+    wrap.appendChild(card)
+    slot.appendChild(wrap)
+    return
+  }
+
+  if (state?.type === "error") {
+    const wrap = document.createElement("div")
+    wrap.className = "userSlot"
+
+    const msg = document.createElement("div")
+    msg.className = "mini"
+    msg.style.opacity = "0.9"
+    msg.textContent = "Login failed"
+
+    const b = document.createElement("button")
+    b.className = "btn"
+    b.textContent = "Retry"
+    b.onclick = state.onRetry
+
+    wrap.appendChild(msg)
+    wrap.appendChild(b)
+    slot.appendChild(wrap)
+    return
+  }
+
+  const wrap = document.createElement("div")
+  wrap.className = "userSlot"
+
+  const msg = document.createElement("div")
+  msg.className = "mini"
+  msg.style.opacity = "0.9"
+  msg.textContent = "Authenticating…"
+
+  wrap.appendChild(msg)
+  slot.appendChild(wrap)
 }
 
 async function run() {
@@ -728,39 +632,10 @@ async function run() {
   const $ = (id) => document.getElementById(id)
   const logLine = (msg) => { $("status").textContent = msg }
 
-  async function apiWithUser(path, opts = {}) {
-    const headers = new Headers(opts.headers || {})
-    if (inDiscord) {
-      const u = await getActivityUser()
-      if (u?.id) headers.set("x-user-id", u.id)
-    }
-    return api(path, { ...opts, headers })
-  }
-
   async function attemptLogin() {
     if (!inDiscord) {
-      const fromUrl = readWebUserFromUrl()
-      if (fromUrl?.id) {
-        setUserSlotState({ type: "user", user: fromUrl })
-        return
-      }
-
-      const cached = getCachedWebUser()
-      if (cached?.id) {
-        setUserSlotState({ type: "user", user: cached })
-        return
-      }
-
-      try {
-        const wu = await getWebUser()
-        if (wu?.id) {
-          try { localStorage.setItem("web_user_cache", JSON.stringify(wu)) } catch { }
-          setUserSlotState({ type: "user", user: wu })
-          return
-        }
-      } catch { }
-
-      setUserSlotState({ type: "outside" })
+      setUserSlotState({ type: "error", onRetry: attemptLogin })
+      logLine("Open inside Discord to authenticate.")
       return
     }
 
@@ -782,12 +657,6 @@ async function run() {
   }
 
   await attemptLogin()
-
-  const r = await apiWithUser("/api/user/isAdmin")
-  const isAdmin = Boolean(r.data?.isAdmin)
-  window.__isAdmin = isAdmin
-  const brand = document.querySelector(".brandTitle")
-  if (brand) brand.textContent = isAdmin ? "r/place viewer (ADMIN)" : "r/place viewer"
 
   const palette = [
     "#000000", "#ffffff", "#ff0000", "#00ff00", "#0000ff", "#ffff00", "#ff00ff", "#00ffff",
@@ -846,14 +715,6 @@ async function run() {
   function setHoverUserText(username, id) {
     $("hoverBy").textContent = username || "-"
     $("hoverId").textContent = id || "-"
-  }
-
-  function hexToRgba(hex, a) {
-    const h = hex.replace("#", "")
-    const r3 = parseInt(h.slice(0, 2), 16)
-    const g3 = parseInt(h.slice(2, 4), 16)
-    const b3 = parseInt(h.slice(4, 6), 16)
-    return `rgba(${r3},${g3},${b3},${a})`
   }
 
   function idx(x, y) {
@@ -961,6 +822,14 @@ async function run() {
     }
 
     return { chunksApplied: any, metaApplied }
+  }
+
+  function hexToRgba(hex, a) {
+    const h = hex.replace("#", "")
+    const r3 = parseInt(h.slice(0, 2), 16)
+    const g3 = parseInt(h.slice(2, 4), 16)
+    const b3 = parseInt(h.slice(4, 6), 16)
+    return `rgba(${r3},${g3},${b3},${a})`
   }
 
   function render() {
@@ -1239,28 +1108,6 @@ async function run() {
     resolveHoverOwner(state.hover)
   }
 
-  const resetSessionBtn = $("resetSession")
-  if (resetSessionBtn) {
-    resetSessionBtn.onclick = async () => {
-      const prevText = resetSessionBtn.textContent
-      resetSessionBtn.disabled = true
-      resetSessionBtn.textContent = "Resetting..."
-      try {
-        console.log(JSON.stringify({ t: new Date().toISOString(), event: "resetSession:ui_click", inDiscord }))
-        logLine("⏳ Resetting board (deleting ALL chunks)...")
-        await resetBoardBackend(inDiscord)
-        await reloadBoardFromServerless()
-        logLine("✅ Board reset.")
-      } catch (e) {
-        console.log(JSON.stringify({ t: new Date().toISOString(), event: "resetSession:error", msg: String(e?.message || e), err: String(e?.stack || e) }))
-        logLine(String(e?.message || e))
-      } finally {
-        resetSessionBtn.disabled = false
-        resetSessionBtn.textContent = prevText
-      }
-    }
-  }
-
   const startBtn = $("start")
   if (startBtn) {
     startBtn.onclick = async () => {
@@ -1324,20 +1171,21 @@ async function run() {
 
   buildPalette()
 
-    ; (async () => {
-      try {
-        logLine("⏳ Loading board from serverless...")
-        await reloadBoardFromServerless()
-      } catch (e) {
-        logLine(String(e?.message || "⚠️ serverless /board unreachable"))
-        $("fit").click()
-        render()
-        resolveHoverOwner(state.hover)
-      }
-    })()
+  ; (async () => {
+    try {
+      logLine("⏳ Loading board from serverless...")
+      await reloadBoardFromServerless()
+    } catch (e) {
+      logLine(String(e?.message || "⚠️ serverless /board unreachable"))
+      $("fit").click()
+      render()
+      resolveHoverOwner(state.hover)
+    }
+  })()
 
   async function pollBoard() {
-    let polling = true
+    if (polling) return
+    polling = true
     while (polling) {
       try {
         let pageToken = null
