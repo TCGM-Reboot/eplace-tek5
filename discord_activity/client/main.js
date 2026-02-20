@@ -751,7 +751,17 @@ async function run() {
 
   const inDiscord = isProbablyDiscordActivity()
   const $ = (id) => document.getElementById(id)
-  const logLine = (msg) => { $("status").textContent = msg }
+  const logLine = (msg) => { const el = $("status"); if (el) el.textContent = msg }
+
+  function bindClick(id, handler) {
+    const el = $(id)
+    if (!el) {
+      dWarn("ui", "missing_element_for_onclick", { id })
+      return null
+    }
+    el.onclick = handler
+    return el
+  }
 
   dGroup("[run] bootstrap", {
     inDiscord,
@@ -911,16 +921,16 @@ async function run() {
   }
 
   function updateHUD() {
-    $("boardSize").textContent = `${board.w}×${board.h}`
-    $("zoomVal").textContent = view.zoom.toFixed(4)
-    $("panVal").textContent = `${Math.round(view.panX)}, ${Math.round(view.panY)}`
-    $("colorVal").textContent = `${state.selectedColor}`
-    $("hoverVal").textContent = state.hover ? `${state.hover.x}, ${state.hover.y}` : "-"
+    const bs = $("boardSize"); if (bs) bs.textContent = `${board.w}×${board.h}`
+    const zv = $("zoomVal"); if (zv) zv.textContent = view.zoom.toFixed(4)
+    const pv = $("panVal"); if (pv) pv.textContent = `${Math.round(view.panX)}, ${Math.round(view.panY)}`
+    const cvl = $("colorVal"); if (cvl) cvl.textContent = `${state.selectedColor}`
+    const hv = $("hoverVal"); if (hv) hv.textContent = state.hover ? `${state.hover.x}, ${state.hover.y}` : "-"
   }
 
   function setHoverUserText(username, id) {
-    $("hoverBy").textContent = username || "-"
-    $("hoverId").textContent = id || "-"
+    const hb = $("hoverBy"); if (hb) hb.textContent = username || "-"
+    const hi = $("hoverId"); if (hi) hi.textContent = id || "-"
   }
 
   function hexToRgba(hex, a) {
@@ -1333,6 +1343,16 @@ async function run() {
     return syncInFlight
   }
 
+  function fitView() {
+    const fitZoom = Math.min(canvas.width / board.w, canvas.height / board.h)
+    const prevZoom = view.zoom
+    view.zoom = clamp(Math.floor(fitZoom), 2, 80)
+    view.panX = (canvas.width - board.w * view.zoom) / 2
+    view.panY = (canvas.height - board.h * view.zoom) / 2
+    dLog("ui", "fit", { prevZoom, nextZoom: view.zoom, panX: view.panX, panY: view.panY, board: { w: board.w, h: board.h } })
+    render()
+  }
+
   async function fullReloadFromServerless() {
     logLine("⏳ Reloading board from serverless...")
     dGroup("[full_reload_from_serverless] start", { time: dNowIso(), lastSince_before: lastSince, board_before: { w: board.w, h: board.h, chunkSize, colors: board.colors, cooldownMs: board.cooldownMs } })
@@ -1347,8 +1367,7 @@ async function run() {
     dGroupEnd()
 
     logLine("✅ Board reloaded.")
-    $("fit").click()
-    render()
+    fitView()
     resolveHoverOwner(state.hover)
   }
 
@@ -1404,6 +1423,7 @@ async function run() {
 
   function buildPalette() {
     const wrap = $("palette")
+    if (!wrap) return
     wrap.innerHTML = ""
     palette.forEach((col, i) => {
       const b = document.createElement("button")
@@ -1425,17 +1445,9 @@ async function run() {
     })
   }
 
-  $("fit").onclick = () => {
-    const fitZoom = Math.min(canvas.width / board.w, canvas.height / board.h)
-    const prevZoom = view.zoom
-    view.zoom = clamp(Math.floor(fitZoom), 2, 80)
-    view.panX = (canvas.width - board.w * view.zoom) / 2
-    view.panY = (canvas.height - board.h * view.zoom) / 2
-    dLog("ui", "fit", { prevZoom, nextZoom: view.zoom, panX: view.panX, panY: view.panY, board: { w: board.w, h: board.h } })
-    render()
-  }
+  bindClick("fit", () => fitView())
 
-  $("reload").onclick = async () => {
+  bindClick("reload", async () => {
     const b = $("reload")
     const prev = b ? b.textContent : "Reload board"
     if (b) {
@@ -1453,9 +1465,9 @@ async function run() {
         b.textContent = prev
       }
     }
-  }
+  })
 
-  $("reset").onclick = async () => {
+  bindClick("reset", async () => {
     const b = $("reset")
     const prev = b ? b.textContent : "Reset"
     if (b) {
@@ -1472,7 +1484,7 @@ async function run() {
         b.textContent = prev
       }
     }
-  }
+  })
 
   const snapBtn = $("snapshot")
   if (snapBtn) {
@@ -1497,13 +1509,13 @@ async function run() {
     }
   }
 
-  $("clear").onclick = () => {
+  bindClick("clear", () => {
     clearBoardLocal()
     logLine("🧹 Cleared locally.")
     dLog("ui", "clear_local", { time: dNowIso(), board: { w: board.w, h: board.h, pixels: board.pixels?.length, metaHash: board.metaHash?.length, metaTs: board.metaTs?.length } })
     render()
     resolveHoverOwner(state.hover)
-  }
+  })
 
   const resetSessionBtn = $("resetSession")
   if (resetSessionBtn) {
@@ -1606,8 +1618,7 @@ async function run() {
     } catch (e) {
       dErr("startup", "startup_load_board_error", { time: dNowIso(), message: String(e?.message || e), stack: e?.stack || null })
       logLine(String(e?.message || "⚠️ server /board unreachable"))
-      $("fit").click()
-      render()
+      fitView()
       resolveHoverOwner(state.hover)
     }
   })()
