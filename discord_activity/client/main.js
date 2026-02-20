@@ -5,6 +5,58 @@ console.log("MAIN.JS VERSION = BOARD_V3_OAUTH_VIA_PROXY_ONLY_NO_GUILDS", new Dat
 
 const GATEWAY_BASE = "https://1224715390362324992.discordsays.com/gcp"
 
+const DEBUG = (() => {
+  try {
+    const qp = new URLSearchParams(location.search)
+    const v = qp.get("debug")
+    if (v === "1" || v === "true") return true
+  } catch { }
+  try {
+    const raw = localStorage.getItem("debug")
+    if (raw === "1" || raw === "true") return true
+  } catch { }
+  return (import.meta && import.meta.env && String(import.meta.env.MODE || "") !== "production")
+})()
+
+function dbg(...args) {
+  if (!DEBUG) return
+  console.log("[DBG]", ...args)
+}
+
+function dbgGroup(title, fn) {
+  if (!DEBUG) return fn()
+  console.groupCollapsed(`[DBG] ${title}`)
+  try { return fn() } finally { console.groupEnd() }
+}
+
+async function dbgFetch(url, init) {
+  const started = performance.now()
+  const method = String(init?.method || "GET")
+  const safeInit = init ? { ...init } : {}
+  if (safeInit?.headers && typeof safeInit.headers === "object") safeInit.headers = { ...safeInit.headers }
+  if (safeInit?.body && typeof safeInit.body === "string") {
+    try {
+      const j = JSON.parse(safeInit.body)
+      if (j?.payload?.accessToken) j.payload.accessToken = "***"
+      if (j?.accessToken) j.accessToken = "***"
+      if (j?.payload?.code) j.payload.code = "***"
+      if (j?.code) j.code = "***"
+      safeInit.body = JSON.stringify(j)
+    } catch { }
+  }
+
+  try {
+    const res = await fetch(url, init)
+    const ms = Math.round((performance.now() - started) * 10) / 10
+    dbg(`${method} ${url} -> ${res.status} (${ms}ms)`, safeInit)
+    return res
+  } catch (e) {
+    const ms = Math.round((performance.now() - started) * 10) / 10
+    dbg(`${method} ${url} -> FETCH_ERROR (${ms}ms)`, safeInit, e)
+    throw e
+  }
+}
+
 function escapeHtml(s) {
   return String(s)
     .replaceAll("&", "&amp;")
@@ -118,7 +170,8 @@ function hexToIntColor(colorHex) {
 }
 
 async function exchangeCodeForTokenViaProxy(code) {
-  const res = await fetch(`${GATEWAY_BASE}/proxy`, {
+  dbg("oauth: exchangeCodeForTokenViaProxy() start")
+  const res = await dbgFetch(`${GATEWAY_BASE}/proxy`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -136,52 +189,68 @@ async function exchangeCodeForTokenViaProxy(code) {
   try { data = text ? JSON.parse(text) : null } catch { data = { raw: text } }
 
   const tok = data?.access_token || data?.accessToken
-  if (!res.ok || !tok) throw new Error(`token_exchange_failed ${res.status} ${JSON.stringify(data)}`)
+  if (!res.ok || !tok) {
+    dbg("oauth: token_exchange_failed", { status: res.status, data })
+    throw new Error(`token_exchange_failed ${res.status} ${JSON.stringify(data)}`)
+  }
+
+  dbg("oauth: exchange ok (token hidden)")
   return String(tok)
 }
 
 async function ensureDiscordSdkReady(clientId) {
+  dbg("sdk: init", { clientId })
   const discordSdk = new DiscordSDK(clientId)
   const readyPromise = discordSdk.ready()
   const timeoutPromise = new Promise((_, rej) => setTimeout(() => rej(new Error("discord_sdk_ready_timeout")), 8000))
   await Promise.race([readyPromise, timeoutPromise])
+  dbg("sdk: ready", { guildId: discordSdk.guildId || null, channelId: discordSdk.channelId || null })
   return discordSdk
 }
 
 async function loginDiscordActivity(discordSdk, clientId) {
-  const { code } = await discordSdk.commands.authorize({
-    client_id: clientId,
-    response_type: "code",
-    state: "",
-    prompt: "none",
-    scope: ["identify", "applications.commands"]
+  return dbgGroup("loginDiscordActivity", async () => {
+    dbg("oauth: authorize()")
+    const { code } = await discordSdk.commands.authorize({
+      client_id: clientId,
+      response_type: "code",
+      state: "",
+      prompt: "none",
+      scope: ["identify", "applications.commands"]
+    })
+    dbg("oauth: authorize ok (code hidden)")
+
+    const access_token = await exchangeCodeForTokenViaProxy(code)
+
+    dbg("oauth: authenticate()")
+    const auth = await discordSdk.commands.authenticate({ access_token })
+    if (!auth?.user?.id) {
+      dbg("oauth: authenticate_failed", auth)
+      throw new Error("authenticate_failed")
+    }
+
+    const u = {
+      id: String(auth.user.id),
+      username: String(auth.user.global_name || auth.user.username || "Unknown"),
+      avatar: auth.user.avatar || "",
+      avatar_url: auth.user.avatar ? `https://cdn.discordapp.com/avatars/${auth.user.id}/${auth.user.avatar}.png?size=128` : ""
+    }
+
+    const guildId = discordSdk.guildId ? String(discordSdk.guildId) : ""
+    const channelId = discordSdk.channelId ? String(discordSdk.channelId) : ""
+
+    setActivityUser(u)
+    setActivityAuth({
+      accessToken: access_token,
+      guildId,
+      channelId,
+      clientId,
+      at: new Date().toISOString()
+    })
+
+    dbg("oauth: cached user + auth", { user: u, auth: { guildId, channelId, clientId } })
+    return u
   })
-
-  const access_token = await exchangeCodeForTokenViaProxy(code)
-
-  const auth = await discordSdk.commands.authenticate({ access_token })
-  if (!auth?.user?.id) throw new Error("authenticate_failed")
-
-  const u = {
-    id: String(auth.user.id),
-    username: String(auth.user.global_name || auth.user.username || "Unknown"),
-    avatar: auth.user.avatar || "",
-    avatar_url: auth.user.avatar ? `https://cdn.discordapp.com/avatars/${auth.user.id}/${auth.user.avatar}.png?size=128` : ""
-  }
-
-  const guildId = discordSdk.guildId ? String(discordSdk.guildId) : ""
-  const channelId = discordSdk.channelId ? String(discordSdk.channelId) : ""
-
-  setActivityUser(u)
-  setActivityAuth({
-    accessToken: access_token,
-    guildId,
-    channelId,
-    clientId,
-    at: new Date().toISOString()
-  })
-
-  return u
 }
 
 async function getUserForPayload(inDiscord) {
@@ -195,7 +264,7 @@ async function pingBackend(inDiscord) {
   const reqId = makeReqId()
   const user = await getUserForPayload(inDiscord)
 
-  const res = await fetch(`${GATEWAY_BASE}/proxy`, {
+  const res = await dbgFetch(`${GATEWAY_BASE}/proxy`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -223,7 +292,7 @@ async function sessionStartBackend(inDiscord) {
   if (!a?.accessToken) throw new Error("missing_activity_access_token")
   if (!user?.id) throw new Error("missing_user")
 
-  const res = await fetch(`${GATEWAY_BASE}/proxy`, {
+  const res = await dbgFetch(`${GATEWAY_BASE}/proxy`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -253,7 +322,7 @@ async function sessionPauseBackend(inDiscord) {
   if (!a?.accessToken) throw new Error("missing_activity_access_token")
   if (!user?.id) throw new Error("missing_user")
 
-  const res = await fetch(`${GATEWAY_BASE}/proxy`, {
+  const res = await dbgFetch(`${GATEWAY_BASE}/proxy`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -283,7 +352,7 @@ async function resetBoardBackend(inDiscord) {
   if (!a?.accessToken) throw new Error("missing_activity_access_token")
   if (!user?.id) throw new Error("missing_user")
 
-  const res = await fetch(`${GATEWAY_BASE}/proxy`, {
+  const res = await dbgFetch(`${GATEWAY_BASE}/proxy`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -313,7 +382,7 @@ async function snapshotBackend(inDiscord) {
   if (!a?.accessToken) throw new Error("missing_activity_access_token")
   if (!user?.id) throw new Error("missing_user")
 
-  const res = await fetch(`${GATEWAY_BASE}/proxy`, {
+  const res = await dbgFetch(`${GATEWAY_BASE}/proxy`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -332,7 +401,7 @@ async function snapshotBackend(inDiscord) {
 
   const text = await res.text().catch(() => "")
   let data = null
-  try { data = text ? JSON.parse(text) : null } catch { data = { raw: text } }
+ try { data = text ? JSON.parse(text) : null } catch { data = { raw: text } }
   if (!res.ok) throw new Error(`SNAPSHOT_CREATE failed: ${res.status} ${JSON.stringify(data)}`)
   return data
 }
@@ -342,7 +411,7 @@ async function placePixelBackend(inDiscord, x, y, colorHexOrInt) {
   const user = await getUserForPayload(inDiscord)
   const color = hexToIntColor(colorHexOrInt)
 
-  const res = await fetch(`${GATEWAY_BASE}/proxy`, {
+  const res = await dbgFetch(`${GATEWAY_BASE}/proxy`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -369,7 +438,7 @@ async function placePixelBackend(inDiscord, x, y, colorHexOrInt) {
 
 async function resolveUserHashBackend(userHash) {
   const reqId = makeReqId()
-  const res = await fetch(`${GATEWAY_BASE}/proxy`, {
+  const res = await dbgFetch(`${GATEWAY_BASE}/proxy`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -401,7 +470,7 @@ async function getBoardBackend(inDiscord, since, limit = 200, pageToken = null, 
     url.searchParams.set(k, String(v))
   }
 
-  const res = await fetch(url.toString(), {
+  const res = await dbgFetch(url.toString(), {
     method: "GET",
     mode: "cors",
     credentials: "omit",
@@ -528,6 +597,8 @@ function guessSquareSize(n) {
 }
 
 async function run() {
+  dbg("boot", { href: location.href, origin: location.origin, DEBUG, userAgent: navigator.userAgent })
+
   const app = document.querySelector("#app")
   if (!app) throw new Error("Missing #app root element")
 
@@ -601,19 +672,23 @@ async function run() {
 
   const clientId = getDiscordClientId()
   const $ = (id) => document.getElementById(id)
-  const logLine = (msg) => { $("status").textContent = msg }
+  const logLine = (msg) => { $("status").textContent = msg; dbg("status:", msg) }
 
   let discordSdk = null
   let inDiscord = false
 
   async function attemptLogin() {
     setUserSlotState({})
+    dbg("login: attemptLogin start", { clientId })
 
     const cached = getActivityUser()
     const cachedAuth = getActivityAuth()
+    dbg("login: cache check", { hasUser: Boolean(cached?.id), hasToken: Boolean(cachedAuth?.accessToken) })
+
     if (cached?.id && cachedAuth?.accessToken) {
       setUserSlotState({ type: "user", user: cached })
       inDiscord = true
+      dbg("login: using cached user", cached)
       return
     }
 
@@ -622,6 +697,7 @@ async function run() {
       inDiscord = true
     } catch (e) {
       inDiscord = false
+      dbg("login: sdk not ready (likely not in Discord)", e)
       logLine("Open inside Discord to authenticate.")
       setUserSlotState({ type: "error", message: "Open inside Discord", onRetry: attemptLogin })
       return
@@ -631,9 +707,11 @@ async function run() {
       const u = await loginDiscordActivity(discordSdk, clientId)
       setUserSlotState({ type: "user", user: u })
       logLine(`✅ Logged in as ${u.username}`)
+      dbg("login: success", u)
     } catch (e) {
       clearActivityAuth()
       clearActivityUser()
+      dbg("login: failed", e)
       logLine(String(e?.message || e))
       setUserSlotState({ type: "error", message: "Login failed", onRetry: attemptLogin })
     }
@@ -788,6 +866,7 @@ async function run() {
             if (meta.cooldownMs) board.cooldownMs = Number(meta.cooldownMs) || board.cooldownMs
             if (meta.chunkSize) chunkSize = Number(meta.chunkSize) || chunkSize
             metaApplied = true
+            dbg("board: meta applied", meta)
           }
         }
 
@@ -812,6 +891,7 @@ async function run() {
       if (!board?.pixels?.length) ensureBoardSize(board.w || 100, board.h || 100)
     }
 
+    dbg("board: load full done", { chunksApplied: any, metaApplied, w: board.w, h: board.h, chunkSize })
     return { chunksApplied: any, metaApplied }
   }
 
@@ -956,6 +1036,7 @@ async function run() {
         : "1px solid rgba(255,255,255,0.25)"
       b.onclick = () => {
         state.selectedColor = i
+        dbg("ui: selectColor", { selectedColor: i, hex: col })
         buildPalette()
         render()
       }
@@ -968,6 +1049,7 @@ async function run() {
     view.zoom = clamp(Math.floor(fitZoom), 2, 80)
     view.panX = (canvas.width - board.w * view.zoom) / 2
     view.panY = (canvas.height - board.h * view.zoom) / 2
+    dbg("ui: fit", { zoom: view.zoom, panX: view.panX, panY: view.panY })
     render()
   }
 
@@ -1006,6 +1088,7 @@ async function run() {
       b.disabled = true
       b.textContent = "Reloading..."
     }
+    dbg("ui: reload click")
     try {
       await reloadBoardFromServerless()
     } catch (e) {
@@ -1026,6 +1109,7 @@ async function run() {
       b.textContent = "Resetting..."
     }
 
+    dbg("ui: reset click")
     try {
       logLine("⏳ Resetting board (deleting ALL chunks)...")
       await resetBoardBackend(inDiscord)
@@ -1047,6 +1131,7 @@ async function run() {
       const prev = snapBtn.textContent
       snapBtn.disabled = true
       snapBtn.textContent = "Snapshotting..."
+      dbg("ui: snapshot click")
 
       try {
         logLine("⏳ Creating snapshot...")
@@ -1062,6 +1147,7 @@ async function run() {
   }
 
   $("clear").onclick = () => {
+    dbg("ui: clear local")
     clearBoardLocal()
     logLine("🧹 Cleared locally.")
     render()
@@ -1074,6 +1160,7 @@ async function run() {
       const prevText = resetSessionBtn.textContent
       resetSessionBtn.disabled = true
       resetSessionBtn.textContent = "Resetting..."
+      dbg("ui: resetSession click")
       try {
         logLine("⏳ Resetting board (deleting ALL chunks)...")
         await resetBoardBackend(inDiscord)
@@ -1094,6 +1181,7 @@ async function run() {
       const prevText = startBtn.textContent
       startBtn.disabled = true
       startBtn.textContent = "Starting..."
+      dbg("ui: session start click")
       try {
         logLine("⏳ Session start...")
         const data = await sessionStartBackend(inDiscord)
@@ -1113,6 +1201,7 @@ async function run() {
       const prevText = pauseBtn.textContent
       pauseBtn.disabled = true
       pauseBtn.textContent = "Pausing..."
+      dbg("ui: session pause click")
       try {
         logLine("⏳ Session pause...")
         const data = await sessionPauseBackend(inDiscord)
@@ -1134,6 +1223,7 @@ async function run() {
       pingBtn.disabled = true
       pingBtn.textContent = "Ping..."
       pingOut.textContent = ""
+      dbg("ui: ping click")
       try {
         const data = await pingBackend(inDiscord)
         pingOut.textContent = JSON.stringify(data, null, 2)
@@ -1153,6 +1243,7 @@ async function run() {
       logLine("⏳ Loading board from serverless...")
       await reloadBoardFromServerless()
     } catch (e) {
+      dbg("board: initial load failed", e)
       logLine(String(e?.message || "⚠️ serverless /board unreachable"))
       $("fit").click()
       render()
@@ -1163,6 +1254,7 @@ async function run() {
   async function pollBoard() {
     if (polling) return
     polling = true
+    dbg("poll: start")
     while (polling) {
       try {
         let pageToken = null
@@ -1184,10 +1276,13 @@ async function run() {
 
         lastSince = maxUpdatedAt
         if (changed) {
+          dbg("poll: changed -> render", { lastSince })
           render()
           resolveHoverOwner(state.hover)
         }
-      } catch { }
+      } catch (e) {
+        dbg("poll: error", e)
+      }
       await new Promise((r3) => setTimeout(r3, 1000))
     }
   }
