@@ -100,6 +100,7 @@ function getCachedWebUser() {
 
 async function clearLocalAuth() {
   try { localStorage.removeItem("activity_user") } catch { }
+  try { localStorage.removeItem("activity_auth") } catch { }
   try { localStorage.removeItem("web_user_cache") } catch { }
 }
 
@@ -219,33 +220,87 @@ function setUserSlotState(state) {
   slot.appendChild(wrap)
 }
 
-async function loginDiscordActivity() {
-  const cfg = await api("/api/auth/config")
-  if (!cfg.res.ok || !cfg.data?.clientId) throw new Error("missing_client_id")
+function getDiscordClientIdFromDom() {
+  const meta = document.querySelector('meta[name="discord-client-id"]')
+  const v = meta?.getAttribute("content")
+  return v ? String(v).trim() : ""
+}
 
-  const discordSdk = new DiscordSDK(cfg.data.clientId)
+async function getDiscordClientId() {
+  const fromWindow = (window && window.__DISCORD_CLIENT_ID) ? String(window.__DISCORD_CLIENT_ID).trim() : ""
+  if (fromWindow) return fromWindow
+  const fromMeta = getDiscordClientIdFromDom()
+  if (fromMeta) return fromMeta
+
+  try {
+    const cfg = await api("/api/auth/config")
+    if (cfg?.res?.ok && cfg?.data?.clientId) return String(cfg.data.clientId)
+  } catch { }
+
+  try {
+    const r = await fetch(`${GATEWAY_BASE}/auth/config`, { method: "GET", mode: "cors", credentials: "omit", cache: "no-store" })
+    const t = await r.text().catch(() => "")
+    let d = null
+    try { d = t ? JSON.parse(t) : null } catch { d = null }
+    if (r.ok && d?.clientId) return String(d.clientId)
+  } catch { }
+
+  return ""
+}
+
+function setActivityAuth(auth) {
+  try { localStorage.setItem("activity_auth", JSON.stringify(auth || {})) } catch { }
+}
+
+async function getActivityAuth() {
+  try {
+    const raw = localStorage.getItem("activity_auth")
+    if (!raw) return null
+    const a = JSON.parse(raw)
+    if (!a?.accessToken) return null
+    return a
+  } catch {
+    return null
+  }
+}
+
+async function oauthExchangeWithWorker(code) {
+  const res = await fetch(`${GATEWAY_BASE}/oauthExchange`, {
+    method: "POST",
+    mode: "cors",
+    credentials: "omit",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ code })
+  })
+
+  const text = await res.text().catch(() => "")
+  let data = null
+  try { data = text ? JSON.parse(text) : null } catch { data = { raw: text } }
+  if (!res.ok || !data?.access_token) {
+    const d = data ? JSON.stringify(data) : ""
+    throw new Error(`token_exchange_failed ${res.status} ${d}`)
+  }
+  return data
+}
+
+async function loginDiscordActivity() {
+  const clientId = await getDiscordClientId()
+  if (!clientId) throw new Error("missing_client_id")
+
+  const discordSdk = new DiscordSDK(clientId)
   await discordSdk.ready()
 
   const authz = await discordSdk.commands.authorize({
-    client_id: cfg.data.clientId,
+    client_id: clientId,
     response_type: "code",
     state: "",
     prompt: "consent",
     scope: ["identify"]
   })
 
-  const tokenRes = await api("/api/token", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ code: authz.code })
-  })
+  const tokenData = await oauthExchangeWithWorker(authz.code)
 
-  if (!tokenRes.res.ok || !tokenRes.data?.access_token) {
-    const d = tokenRes.data ? JSON.stringify(tokenRes.data) : ""
-    throw new Error(`token_exchange_failed ${d}`)
-  }
-
-  const auth = await discordSdk.commands.authenticate({ access_token: tokenRes.data.access_token })
+  const auth = await discordSdk.commands.authenticate({ access_token: tokenData.access_token })
   if (!auth?.user) throw new Error("authenticate_failed")
 
   const u = {
@@ -255,7 +310,21 @@ async function loginDiscordActivity() {
     avatar_url: auth.user.avatar ? `https://cdn.discordapp.com/avatars/${auth.user.id}/${auth.user.avatar}.png?size=128` : ""
   }
 
+  const guildId = discordSdk.guildId ? String(discordSdk.guildId) : ""
+  const channelId = discordSdk.channelId ? String(discordSdk.channelId) : ""
+
   localStorage.setItem("activity_user", JSON.stringify(u))
+  setActivityAuth({
+    accessToken: String(tokenData.access_token),
+    tokenType: tokenData.token_type ? String(tokenData.token_type) : "",
+    expiresIn: tokenData.expires_in != null ? Number(tokenData.expires_in) : null,
+    scope: tokenData.scope ? String(tokenData.scope) : "",
+    guildId,
+    channelId,
+    clientId: String(clientId),
+    at: new Date().toISOString()
+  })
+
   return u
 }
 
@@ -309,6 +378,14 @@ async function getUserIdForAction(inDiscord) {
   return null
 }
 
+async function requireAdminAuthForWorker(inDiscord) {
+  if (!inDiscord) return { accessToken: null, guildId: null }
+  const a = await getActivityAuth()
+  if (!a?.accessToken) throw new Error("missing_activity_access_token")
+  if (!a?.guildId) throw new Error("missing_guild_id")
+  return { accessToken: String(a.accessToken), guildId: String(a.guildId) }
+}
+
 async function pingBackend(inDiscord) {
   const reqId = makeReqId()
   const user = await getUserForPayload(inDiscord)
@@ -337,6 +414,7 @@ async function pingBackend(inDiscord) {
 async function sessionStartBackend(inDiscord) {
   const reqId = makeReqId()
   const userId = await getUserIdForAction(inDiscord)
+  const admin = await requireAdminAuthForWorker(inDiscord)
 
   const res = await fetch(`${GATEWAY_BASE}/proxy`, {
     method: "POST",
@@ -347,7 +425,9 @@ async function sessionStartBackend(inDiscord) {
         from: "activity",
         at: new Date().toISOString(),
         reqId,
-        userId: userId || null
+        userId: userId || null,
+        accessToken: admin.accessToken,
+        guildId: admin.guildId
       }
     })
   })
@@ -362,6 +442,7 @@ async function sessionStartBackend(inDiscord) {
 async function sessionPauseBackend(inDiscord) {
   const reqId = makeReqId()
   const userId = await getUserIdForAction(inDiscord)
+  const admin = await requireAdminAuthForWorker(inDiscord)
 
   const res = await fetch(`${GATEWAY_BASE}/proxy`, {
     method: "POST",
@@ -372,7 +453,9 @@ async function sessionPauseBackend(inDiscord) {
         from: "activity",
         at: new Date().toISOString(),
         reqId,
-        userId: userId || null
+        userId: userId || null,
+        accessToken: admin.accessToken,
+        guildId: admin.guildId
       }
     })
   })
@@ -387,13 +470,17 @@ async function sessionPauseBackend(inDiscord) {
 async function resetBoardBackend(inDiscord) {
   const reqId = makeReqId()
   const userId = await getUserIdForAction(inDiscord)
+  const admin = await requireAdminAuthForWorker(inDiscord)
+
   const payload = {
     type: "RESET_BOARD",
     payload: {
       from: "activity",
       at: new Date().toISOString(),
       reqId,
-      userId
+      userId,
+      accessToken: admin.accessToken,
+      guildId: admin.guildId
     }
   }
 
@@ -429,6 +516,7 @@ async function resetBoardBackend(inDiscord) {
 async function snapshotBackend(inDiscord, region = null) {
   const reqId = makeReqId()
   const userId = await getUserIdForAction(inDiscord)
+  const admin = await requireAdminAuthForWorker(inDiscord)
 
   const payload = {
     type: "SNAPSHOT_CREATE",
@@ -437,7 +525,9 @@ async function snapshotBackend(inDiscord, region = null) {
       at: new Date().toISOString(),
       reqId,
       userId,
-      region: region || null
+      region: region || null,
+      accessToken: admin.accessToken,
+      guildId: admin.guildId
     }
   }
 
@@ -688,7 +778,8 @@ async function run() {
 
     try {
       const cached = await getActivityUser()
-      if (cached?.id) {
+      const cachedAuth = await getActivityAuth()
+      if (cached?.id && cachedAuth?.accessToken) {
         setUserSlotState({ type: "user", user: cached })
         return
       }
