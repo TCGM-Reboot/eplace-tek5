@@ -1,7 +1,7 @@
 import "./style.css"
 import { DiscordSDK } from "@discord/embedded-app-sdk"
 
-console.log("MAIN.JS VERSION = BOARD_V3_GUIDE_OAUTH_VIA_API_TOKEN_NO_GUILDS", new Date().toISOString())
+console.log("MAIN.JS VERSION = BOARD_V3_OAUTH_VIA_PROXY_ONLY_NO_GUILDS", new Date().toISOString())
 
 const GATEWAY_BASE = "https://1224715390362324992.discordsays.com/gcp"
 
@@ -116,77 +116,27 @@ function hexToIntColor(colorHex) {
   return parseInt(s, 10) >>> 0
 }
 
-async function exchangeCodeForTokenViaApi(code) {
-  const targets = [
-    "/api/token",
-    `${GATEWAY_BASE}/api/token`,
-    `${GATEWAY_BASE}/token`
-  ]
+async function exchangeCodeForTokenViaProxy(code) {
+  const res = await fetch(`${GATEWAY_BASE}/proxy`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      type: "OAUTH_TOKEN",
+      payload: { code }
+    }),
+    mode: "cors",
+    credentials: "omit",
+    cache: "no-store",
+    redirect: "follow"
+  })
 
-  let lastErr = null
+  const text = await res.text().catch(() => "")
+  let data = null
+  try { data = text ? JSON.parse(text) : null } catch { data = { raw: text } }
 
-  for (const url of targets) {
-    try {
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code }),
-        mode: "cors",
-        credentials: "omit",
-        cache: "no-store",
-        redirect: "follow"
-      })
-
-      const text = await res.text().catch(() => "")
-      let data = null
-      try { data = text ? JSON.parse(text) : null } catch { data = { raw: text } }
-
-      if (res.ok && (data?.access_token || data?.accessToken)) {
-        return String(data.access_token || data.accessToken)
-      }
-
-      if (res.status === 404 || res.status === 405) {
-        lastErr = new Error(`token_endpoint_unavailable ${res.status} ${url}`)
-        continue
-      }
-
-      lastErr = new Error(`token_exchange_failed ${res.status} ${url} ${JSON.stringify(data)}`)
-    } catch (e) {
-      lastErr = e
-    }
-  }
-
-  try {
-    const res = await fetch(`${GATEWAY_BASE}/proxy`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        type: "OAUTH_TOKEN",
-        payload: { code }
-      }),
-      mode: "cors",
-      credentials: "omit",
-      cache: "no-store",
-      redirect: "follow"
-    })
-
-    const text = await res.text().catch(() => "")
-    let data = null
-    try { data = text ? JSON.parse(text) : null } catch { data = { raw: text } }
-
-    const tok =
-      data?.access_token ||
-      data?.accessToken ||
-      data?.data?.access_token ||
-      data?.data?.accessToken
-
-    if (res.ok && tok) return String(tok)
-
-    throw new Error(`token_exchange_failed ${res.status} proxy ${JSON.stringify(data)}`)
-  } catch (e) {
-    if (lastErr) throw lastErr
-    throw e
-  }
+  const tok = data?.access_token || data?.accessToken
+  if (!res.ok || !tok) throw new Error(`token_exchange_failed ${res.status} ${JSON.stringify(data)}`)
+  return String(tok)
 }
 
 async function loginDiscordActivity() {
@@ -204,7 +154,7 @@ async function loginDiscordActivity() {
     scope: ["identify", "applications.commands"]
   })
 
-  const access_token = await exchangeCodeForTokenViaApi(code)
+  const access_token = await exchangeCodeForTokenViaProxy(code)
 
   const auth = await discordSdk.commands.authenticate({ access_token })
   if (!auth?.user) throw new Error("authenticate_failed")
