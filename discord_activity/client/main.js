@@ -117,7 +117,7 @@ function hexToIntColor(colorHex) {
 }
 
 async function exchangeCodeForTokenViaApi(code) {
-  const res = await fetch("/api/token", {
+  const res = await fetch(`${GATEWAY_BASE}/api/token`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ code })
@@ -127,10 +127,11 @@ async function exchangeCodeForTokenViaApi(code) {
   let data = null
   try { data = text ? JSON.parse(text) : null } catch { data = { raw: text } }
 
-  if (!res.ok || !data?.access_token) {
+  const tok = data?.access_token || data?.accessToken || null
+  if (!res.ok || !tok) {
     throw new Error(`token_exchange_failed ${res.status} ${JSON.stringify(data)}`)
   }
-  return String(data.access_token)
+  return String(tok)
 }
 
 async function loginDiscordActivity() {
@@ -224,7 +225,7 @@ async function pingBackend(inDiscord) {
 async function sessionStartBackend(inDiscord) {
   const reqId = makeReqId()
   const userId = await getUserIdForAction(inDiscord)
-  // const admin = await requireAdminAuthForWorker(inDiscord)
+  const admin = await requireAdminAuthForWorker(inDiscord)
 
   const res = await fetch(`${GATEWAY_BASE}/proxy`, {
     method: "POST",
@@ -252,7 +253,7 @@ async function sessionStartBackend(inDiscord) {
 async function sessionPauseBackend(inDiscord) {
   const reqId = makeReqId()
   const userId = await getUserIdForAction(inDiscord)
-  // const admin = await requireAdminAuthForWorker(inDiscord)
+  const admin = await requireAdminAuthForWorker(inDiscord)
 
   const res = await fetch(`${GATEWAY_BASE}/proxy`, {
     method: "POST",
@@ -280,7 +281,7 @@ async function sessionPauseBackend(inDiscord) {
 async function resetBoardBackend(inDiscord) {
   const reqId = makeReqId()
   const userId = await getUserIdForAction(inDiscord)
-  // const admin = await requireAdminAuthForWorker(inDiscord)
+  const admin = await requireAdminAuthForWorker(inDiscord)
 
   const payload = {
     type: "RESET_BOARD",
@@ -326,7 +327,7 @@ async function resetBoardBackend(inDiscord) {
 async function snapshotBackend(inDiscord, region = null) {
   const reqId = makeReqId()
   const userId = await getUserIdForAction(inDiscord)
- // const admin = await requireAdminAuthForWorker(inDiscord)
+  const admin = await requireAdminAuthForWorker(inDiscord)
 
   const payload = {
     type: "SNAPSHOT_CREATE",
