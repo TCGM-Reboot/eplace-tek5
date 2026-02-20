@@ -187,23 +187,22 @@ async function fetchDebug(url, opts, info) {
   }
 }
 
-async function exchangeCodeForTokenViaApi(code) {
-  const payload = { code }
-  const { res, data, meta } = await fetchDebug(
-    `${GATEWAY_BASE}/api/token`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
-    },
-    { kind: "token_exchange", payloadPreview: payload }
-  )
+async function exchangeCodeForTokenViaApi(code, state) {
+  const res = await fetch(`${GATEWAY_BASE}/oauth/exchange`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ code, state }),
+  });
+
+  const text = await res.text().catch(() => "");
+  let data = null;
+  try { data = text ? JSON.parse(text) : null; } catch { data = { raw: text }; }
 
   if (!res.ok || !data?.access_token) {
-    throw new Error(`token_exchange_failed ${meta.status} ${safeJson(data)}`)
+    throw new Error(`token_exchange_failed ${res.status} ${JSON.stringify(data)}`);
   }
 
-  return String(data.access_token)
+  return String(data.access_token);
 }
 
 async function loginDiscordActivity() {
@@ -213,15 +212,21 @@ async function loginDiscordActivity() {
   const discordSdk = new DiscordSDK(clientId)
   await discordSdk.ready()
 
+  const state = makeReqId();
+  try { sessionStorage.setItem("oauth_state", state); } catch {}
+
+  const redirectUri = `https://1224715390362324992.discordsays.com/oauth/callback`
+
   const { code } = await discordSdk.commands.authorize({
     client_id: clientId,
     response_type: "code",
     state: "",
     prompt: "none",
-    scope: ["identify"]
+    redirect_uri: redirectUri,
+    scope: ["identify", "guilds.members.read"]
   })
 
-  const access_token = await exchangeCodeForTokenViaApi(code)
+  const access_token = await exchangeCodeForTokenViaApi(code, state)
 
   const auth = await discordSdk.commands.authenticate({ access_token })
   if (!auth?.user) throw new Error("authenticate_failed")
