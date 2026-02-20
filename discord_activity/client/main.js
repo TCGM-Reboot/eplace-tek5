@@ -266,14 +266,6 @@ async function getUserIdForAction(inDiscord) {
   return u?.id ? String(u.id) : null
 }
 
-async function requireAuthForWorker(inDiscord) {
-  if (!inDiscord) return { accessToken: null, guildId: null }
-  const a = getActivityAuth()
-  if (!a?.accessToken) throw new Error("missing_activity_access_token")
-  const guildId = a?.guildId ? String(a.guildId) : ""
-  return { accessToken: String(a.accessToken), guildId: guildId || null }
-}
-
 async function pingBackend(inDiscord) {
   const reqId = makeReqId()
   const user = await getUserForPayload(inDiscord)
@@ -305,7 +297,6 @@ async function pingBackend(inDiscord) {
 async function sessionStartBackend(inDiscord) {
   const reqId = makeReqId()
   const userId = await getUserIdForAction(inDiscord)
- // const auth = await requireAuthForWorker(inDiscord)
 
   const payload = {
     type: "SESSION_START",
@@ -313,9 +304,7 @@ async function sessionStartBackend(inDiscord) {
       from: "activity",
       at: nowIso(),
       reqId,
-      userId: userId || null,
-      accessToken: auth.accessToken,
-      guildId: auth.guildId
+      userId: userId || null
     }
   }
 
@@ -336,7 +325,6 @@ async function sessionStartBackend(inDiscord) {
 async function sessionPauseBackend(inDiscord) {
   const reqId = makeReqId()
   const userId = await getUserIdForAction(inDiscord)
- // const auth = await requireAuthForWorker(inDiscord)
 
   const payload = {
     type: "SESSION_PAUSE",
@@ -344,9 +332,7 @@ async function sessionPauseBackend(inDiscord) {
       from: "activity",
       at: nowIso(),
       reqId,
-      userId: userId || null,
-      accessToken: auth.accessToken,
-      guildId: auth.guildId
+      userId: userId || null
     }
   }
 
@@ -367,7 +353,6 @@ async function sessionPauseBackend(inDiscord) {
 async function resetBoardBackend(inDiscord) {
   const reqId = makeReqId()
   const userId = await getUserIdForAction(inDiscord)
- // const auth = await requireAuthForWorker(inDiscord)
 
   const payload = {
     type: "RESET_BOARD",
@@ -375,9 +360,7 @@ async function resetBoardBackend(inDiscord) {
       from: "activity",
       at: nowIso(),
       reqId,
-      userId,
-      accessToken: auth.accessToken,
-      guildId: auth.guildId
+      userId
     }
   }
 
@@ -398,7 +381,6 @@ async function resetBoardBackend(inDiscord) {
 async function snapshotBackend(inDiscord, region = null) {
   const reqId = makeReqId()
   const userId = await getUserIdForAction(inDiscord)
-  // const auth = await requireAuthForWorker(inDiscord)
 
   const payload = {
     type: "SNAPSHOT_CREATE",
@@ -407,9 +389,7 @@ async function snapshotBackend(inDiscord, region = null) {
       at: nowIso(),
       reqId,
       userId,
-      region: region || null,
-      accessToken: auth.accessToken,
-      guildId: auth.guildId
+      region: region || null
     }
   }
 
@@ -1112,18 +1092,40 @@ async function run() {
     }
   }
 
+  function chunkViewportParams() {
+    const left = Math.floor((-view.panX) / view.zoom) - 2
+    const top = Math.floor((-view.panY) / view.zoom) - 2
+    const right = Math.ceil((canvas.width - view.panX) / view.zoom) + 2
+    const bottom = Math.ceil((canvas.height - view.panY) / view.zoom) + 2
+
+    const vx0 = clamp(left, 0, board.w - 1)
+    const vy0 = clamp(top, 0, board.h - 1)
+    const vx1 = clamp(right, 0, board.w - 1)
+    const vy1 = clamp(bottom, 0, board.h - 1)
+
+    const minCx = Math.floor(vx0 / chunkSize)
+    const maxCx = Math.floor(vx1 / chunkSize)
+    const minCy = Math.floor(vy0 / chunkSize)
+    const maxCy = Math.floor(vy1 / chunkSize)
+
+    return { minCx, maxCx, minCy, maxCy }
+  }
+
   async function quickGetBoardOnce(reason = "manual", wantMeta = true) {
     const started = msNow()
     const sinceBase = lastSince
     logLine("⏳ Fetching latest chunks...")
 
+    const vp = chunkViewportParams()
+
     console.groupCollapsed("[quick_get_board_once] start")
     console.log("time", nowIso())
     console.log("reason", reason)
     console.log("sinceBase", sinceBase)
-    console.log("limit", 500)
+    console.log("limit", 200)
     console.log("chunkSize", chunkSize)
     console.log("wantMeta", wantMeta)
+    console.log("viewport", vp)
     console.groupEnd()
 
     let pageToken = null
@@ -1134,7 +1136,9 @@ async function run() {
 
     do {
       pages++
-      const data = await getBoardBackend(inDiscord, sinceBase, 500, pageToken, wantMeta ? { includeMeta: "true" } : {})
+      const extra = { ...vp }
+      if (wantMeta) extra.includeMeta = "true"
+      const data = await getBoardBackend(inDiscord, sinceBase, 200, pageToken, extra)
       const chunks = Array.isArray(data?.chunks) ? data.chunks : []
       totalChunks += chunks.length
 
@@ -1147,6 +1151,8 @@ async function run() {
       console.log("skewMs", data?.skewMs ?? null)
       console.log("returned", data?.returned ?? chunks.length)
       console.log("chunks_len", chunks.length)
+      console.log("stoppedForSize", data?.stoppedForSize ?? null)
+      console.log("approxBytes", data?.approxBytes ?? null)
       console.log("nextPageToken", data?.nextPageToken || null)
       if (chunks.length) {
         console.log("first_chunk", chunks[0])
@@ -1520,10 +1526,11 @@ async function run() {
         let chunksTotal = 0
 
         const started = msNow()
+        const vp = chunkViewportParams()
 
         do {
           pages++
-          const data = await getBoardBackend(inDiscord, sinceBase, 200, pageToken, { includeMeta: "true" })
+          const data = await getBoardBackend(inDiscord, sinceBase, 200, pageToken, { includeMeta: "true", ...vp })
           const chunks = Array.isArray(data?.chunks) ? data.chunks : []
           chunksTotal += chunks.length
 
