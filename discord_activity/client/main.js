@@ -1219,20 +1219,8 @@ async function run() {
   })
 
   let lastSince = new Date(0).toISOString()
+  let polling = false
   let placing = false
-
-  let pollActive = false
-  let pollTimer = null
-  let pollBurstLeft = 0
-  let pollInFlight = false
-  let pollQueued = false
-  let pollBackoffMs = 0
-
-  const POLL_BURST_TICKS = 6
-  const POLL_BURST_INTERVAL_MS = 350
-  const POLL_MAX_INTERVAL_MS = 15000
-  const POLL_IDLE_INTERVAL_MS = 8000
-  const POLL_AFTER_VIEWPORT_CHANGE_MS = 700
 
   async function applyUpdateChunks(chunks, wantMeta) {
     dGroup(`[apply_update_chunks] n=${chunks?.length ?? 0}`, { time: dNowIso(), chunkSize, wantMeta })
@@ -1339,117 +1327,6 @@ async function run() {
     return { changed, totalChunks, pages, ms }
   }
 
-  async function pollOnce(reason = "poll") {
-    const sinceBase = lastSince
-    let pageToken = null
-    let maxSeen = sinceBase
-    let changed = false
-    let pages = 0
-    let chunksTotal = 0
-
-    const started = dMsNow()
-    const vp = chunkViewportParams()
-
-    do {
-      pages++
-      const data = await getBoardBackend(inDiscord, sinceBase, 200, pageToken, { includeMeta: "true", ...vp })
-      const chunks = Array.isArray(data?.chunks) ? data.chunks : []
-      chunksTotal += chunks.length
-
-      if (chunks.length) {
-        await applyUpdateChunks(chunks, true)
-        changed = true
-      }
-
-      for (const c of chunks) {
-        if (c?.updatedAt) maxSeen = maxIso(maxSeen, c.updatedAt)
-      }
-      if (data?.serverNow) maxSeen = maxIso(maxSeen, data.serverNow)
-
-      pageToken = data?.nextPageToken || null
-    } while (pageToken)
-
-    lastSince = maxSeen
-
-    if (changed) {
-      const ms = Math.round(dMsNow() - started)
-      dLog("poll", "poll_once_changed", { time: dNowIso(), ms, pages, chunksTotal, lastSince, reason, board: { w: board.w, h: board.h, chunkSize } })
-      render()
-      resolveHoverOwner(state.hover)
-    } else {
-      if (DEBUG_DEEP) dLog("poll", "poll_once_no_change", { time: dNowIso(), pages, lastSince, reason })
-    }
-
-    return { changed, pages, chunksTotal }
-  }
-
-  function stopPollScheduler() {
-    pollActive = false
-    if (pollTimer) {
-      clearTimeout(pollTimer)
-      pollTimer = null
-    }
-  }
-
-  function scheduleNextPoll(delayMs) {
-    if (!pollActive) return
-    if (pollTimer) clearTimeout(pollTimer)
-    pollTimer = setTimeout(() => tickPoll("timer"), Math.max(0, delayMs | 0))
-  }
-
-  async function tickPoll(trigger) {
-    if (!pollActive) return
-    if (pollInFlight) {
-      pollQueued = true
-      return
-    }
-    pollInFlight = true
-    pollQueued = false
-
-    try {
-      const rr = await pollOnce(trigger)
-      if (rr.changed) {
-        pollBackoffMs = 0
-      } else {
-        pollBackoffMs = Math.min(POLL_MAX_INTERVAL_MS, pollBackoffMs ? Math.floor(pollBackoffMs * 1.6) : POLL_IDLE_INTERVAL_MS)
-      }
-
-      if (pollBurstLeft > 0) {
-        pollBurstLeft--
-        scheduleNextPoll(POLL_BURST_INTERVAL_MS)
-      } else {
-        scheduleNextPoll(pollBackoffMs || POLL_IDLE_INTERVAL_MS)
-      }
-    } catch (e) {
-      dErr("poll", "poll_tick_error", { time: dNowIso(), trigger, message: String(e?.message || e), stack: e?.stack || null })
-      pollBackoffMs = Math.min(POLL_MAX_INTERVAL_MS, pollBackoffMs ? Math.floor(pollBackoffMs * 2) : 2000)
-      scheduleNextPoll(pollBackoffMs)
-    } finally {
-      pollInFlight = false
-      if (pollQueued) tickPoll("queued")
-    }
-  }
-
-  function requestPoll(reason = "event", burst = false) {
-    if (!pollActive) {
-      pollActive = true
-      pollBackoffMs = 0
-    }
-    if (burst) pollBurstLeft = Math.max(pollBurstLeft, POLL_BURST_TICKS)
-    if (pollTimer) {
-      clearTimeout(pollTimer)
-      pollTimer = null
-    }
-    scheduleNextPoll(0)
-    if (DEBUG_DEEP) dLog("poll", "request_poll", { time: dNowIso(), reason, burst, pollBurstLeft })
-  }
-
-  let viewportPollDebounce = null
-  function requestPollOnViewportChange() {
-    if (viewportPollDebounce) clearTimeout(viewportPollDebounce)
-    viewportPollDebounce = setTimeout(() => requestPoll("viewport_change", false), POLL_AFTER_VIEWPORT_CHANGE_MS)
-  }
-
   async function fullReloadFromServerless() {
     logLine("⏳ Reloading board from serverless...")
     dGroup("[full_reload_from_serverless] start", { time: dNowIso(), lastSince_before: lastSince, board_before: { w: board.w, h: board.h, chunkSize, colors: board.colors, cooldownMs: board.cooldownMs } })
@@ -1507,9 +1384,7 @@ async function run() {
       dGroupEnd()
 
       logLine(`✅ Place requested @ ${p.x},${p.y}. Syncing from server...`)
-      requestPoll("after_place_pixel", true)
       await quickGetBoardOnce("after_place_pixel", true)
-      requestPoll("after_place_pixel_post_fetch", true)
     } catch (err) {
       dErr("place", "place_pixel_error", { time: dNowIso(), message: String(err?.message || err), stack: err?.stack || null })
       logLine(String(err?.message || err))
@@ -1552,7 +1427,6 @@ async function run() {
     view.panY = (canvas.height - board.h * view.zoom) / 2
     dLog("ui", "fit", { prevZoom, nextZoom: view.zoom, panX: view.panX, panY: view.panY, board: { w: board.w, h: board.h } })
     render()
-    requestPollOnViewportChange()
   }
 
   $("reload").onclick = async () => {
@@ -1564,7 +1438,6 @@ async function run() {
     }
     try {
       await quickGetBoardOnce("reload_button", true)
-      requestPoll("after_reload_button", true)
     } catch (e) {
       dErr("ui", "reload_button_error", { time: dNowIso(), message: String(e?.message || e), stack: e?.stack || null })
       logLine(String(e?.message || e))
@@ -1585,7 +1458,6 @@ async function run() {
     }
     try {
       await fullReloadFromServerless()
-      requestPoll("after_reset_button", true)
     } catch (e) {
       showFatal(e)
     } finally {
@@ -1607,7 +1479,6 @@ async function run() {
         logLine("⏳ Creating snapshot...")
         await snapshotBackend(inDiscord, null)
         logLine("✅ Snapshot requested.")
-        requestPoll("after_snapshot", false)
       } catch (e) {
         dErr("ui", "snapshot_error", { time: dNowIso(), message: String(e?.message || e), stack: e?.stack || null })
         logLine(String(e?.message || e))
@@ -1623,6 +1494,7 @@ async function run() {
     logLine("🧹 Cleared locally.")
     dLog("ui", "clear_local", { time: dNowIso(), board: { w: board.w, h: board.h, pixels: board.pixels?.length, metaHash: board.metaHash?.length, metaTs: board.metaTs?.length } })
     render()
+    resolveHoverOwner(state.hover)
   }
 
   const resetSessionBtn = $("resetSession")
@@ -1636,7 +1508,6 @@ async function run() {
         await resetBoardBackend(inDiscord)
         await fullReloadFromServerless()
         logLine("✅ Board reset.")
-        requestPoll("after_reset_board_backend", true)
       } catch (e) {
         dErr("ui", "reset_board_error", { time: dNowIso(), message: String(e?.message || e), stack: e?.stack || null })
         logLine(String(e?.message || e))
@@ -1659,7 +1530,6 @@ async function run() {
         setSessionState("RUNNING")
         dLog("session", "session_start_result", { time: dNowIso(), result: data })
         logLine(`✅ Session started.${data?.ok === false ? " (server returned ok=false)" : ""}`)
-        requestPoll("after_session_start", false)
       } catch (e) {
         dErr("session", "session_start_error", { time: dNowIso(), message: String(e?.message || e), stack: e?.stack || null })
         logLine(String(e?.message || e))
@@ -1682,7 +1552,6 @@ async function run() {
         setSessionState("PAUSED")
         dLog("session", "session_pause_result", { time: dNowIso(), result: data })
         logLine(`✅ Session paused.${data?.ok === false ? " (server returned ok=false)" : ""}`)
-        requestPoll("after_session_pause", false)
       } catch (e) {
         dErr("session", "session_pause_error", { time: dNowIso(), message: String(e?.message || e), stack: e?.stack || null })
         logLine(String(e?.message || e))
@@ -1723,18 +1592,67 @@ async function run() {
       dLog("startup", "startup_load_board_start", { time: dNowIso() })
       await fullReloadFromServerless()
       dLog("startup", "startup_load_board_done", { time: dNowIso() })
-      requestPoll("startup_after_full_reload", true)
     } catch (e) {
       dErr("startup", "startup_load_board_error", { time: dNowIso(), message: String(e?.message || e), stack: e?.stack || null })
       logLine(String(e?.message || "⚠️ server /board unreachable"))
       $("fit").click()
       render()
       resolveHoverOwner(state.hover)
-      requestPoll("startup_error_fallback", false)
     }
   })()
 
-  requestPoll("startup_initial", true)
+  async function pollBoard() {
+    if (polling) return
+    polling = true
+    while (polling) {
+      try {
+        const sinceBase = lastSince
+        let pageToken = null
+        let maxSeen = sinceBase
+        let changed = false
+        let pages = 0
+        let chunksTotal = 0
+
+        const started = dMsNow()
+        const vp = chunkViewportParams()
+
+        do {
+          pages++
+          const data = await getBoardBackend(inDiscord, sinceBase, 200, pageToken, { includeMeta: "true", ...vp })
+          const chunks = Array.isArray(data?.chunks) ? data.chunks : []
+          chunksTotal += chunks.length
+
+          if (chunks.length) {
+            await applyUpdateChunks(chunks, true)
+            changed = true
+          }
+
+          for (const c of chunks) {
+            if (c?.updatedAt) maxSeen = maxIso(maxSeen, c.updatedAt)
+          }
+          if (data?.serverNow) maxSeen = maxIso(maxSeen, data.serverNow)
+
+          pageToken = data?.nextPageToken || null
+        } while (pageToken)
+
+        lastSince = maxSeen
+
+        if (changed) {
+          const ms = Math.round(dMsNow() - started)
+          dLog("poll", "poll_board_changed", { time: dNowIso(), ms, pages, chunksTotal, lastSince, board: { w: board.w, h: board.h, chunkSize } })
+          render()
+          resolveHoverOwner(state.hover)
+        } else {
+          if (DEBUG_DEEP) dLog("poll", "poll_no_change", { time: dNowIso(), pages, lastSince })
+        }
+      } catch (e) {
+        dErr("poll", "poll_board_error", { time: dNowIso(), message: String(e?.message || e), stack: e?.stack || null })
+      }
+      await new Promise((r3) => setTimeout(r3, 1000))
+    }
+  }
+
+  pollBoard()
 }
 
 try {
