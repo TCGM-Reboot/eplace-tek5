@@ -1219,8 +1219,8 @@ async function run() {
   })
 
   let lastSince = new Date(0).toISOString()
-  let polling = false
   let placing = false
+  let syncInFlight = null
 
   async function applyUpdateChunks(chunks, wantMeta) {
     dGroup(`[apply_update_chunks] n=${chunks?.length ?? 0}`, { time: dNowIso(), chunkSize, wantMeta })
@@ -1327,6 +1327,18 @@ async function run() {
     return { changed, totalChunks, pages, ms }
   }
 
+  async function syncBoardOnce(reason = "after_action", wantMeta = true) {
+    if (syncInFlight) return syncInFlight
+    syncInFlight = (async () => {
+      try {
+        return await quickGetBoardOnce(reason, wantMeta)
+      } finally {
+        syncInFlight = null
+      }
+    })()
+    return syncInFlight
+  }
+
   async function fullReloadFromServerless() {
     logLine("⏳ Reloading board from serverless...")
     dGroup("[full_reload_from_serverless] start", { time: dNowIso(), lastSince_before: lastSince, board_before: { w: board.w, h: board.h, chunkSize, colors: board.colors, cooldownMs: board.cooldownMs } })
@@ -1335,7 +1347,7 @@ async function run() {
     clearBoardLocal()
     lastSince = new Date(0).toISOString()
 
-    await quickGetBoardOnce("full_reload", true)
+    await syncBoardOnce("full_reload", true)
 
     dGroup("[full_reload_from_serverless] done", { time: dNowIso(), board_after: { w: board.w, h: board.h, chunkSize, colors: board.colors, cooldownMs: board.cooldownMs }, lastSince_after: lastSince })
     dGroupEnd()
@@ -1384,7 +1396,7 @@ async function run() {
       dGroupEnd()
 
       logLine(`✅ Place requested @ ${p.x},${p.y}. Syncing from server...`)
-      await quickGetBoardOnce("after_place_pixel", true)
+      await syncBoardOnce("after_place_pixel", true)
     } catch (err) {
       dErr("place", "place_pixel_error", { time: dNowIso(), message: String(err?.message || err), stack: err?.stack || null })
       logLine(String(err?.message || err))
@@ -1437,7 +1449,7 @@ async function run() {
       b.textContent = "Reloading..."
     }
     try {
-      await quickGetBoardOnce("reload_button", true)
+      await syncBoardOnce("reload_button", true)
     } catch (e) {
       dErr("ui", "reload_button_error", { time: dNowIso(), message: String(e?.message || e), stack: e?.stack || null })
       logLine(String(e?.message || e))
@@ -1478,7 +1490,9 @@ async function run() {
       try {
         logLine("⏳ Creating snapshot...")
         await snapshotBackend(inDiscord, null)
-        logLine("✅ Snapshot requested.")
+        logLine("✅ Snapshot requested. Syncing from server...")
+        await syncBoardOnce("after_snapshot", true)
+        logLine("✅ Snapshot done.")
       } catch (e) {
         dErr("ui", "snapshot_error", { time: dNowIso(), message: String(e?.message || e), stack: e?.stack || null })
         logLine(String(e?.message || e))
@@ -1530,6 +1544,7 @@ async function run() {
         setSessionState("RUNNING")
         dLog("session", "session_start_result", { time: dNowIso(), result: data })
         logLine(`✅ Session started.${data?.ok === false ? " (server returned ok=false)" : ""}`)
+        await syncBoardOnce("after_session_start", true)
       } catch (e) {
         dErr("session", "session_start_error", { time: dNowIso(), message: String(e?.message || e), stack: e?.stack || null })
         logLine(String(e?.message || e))
@@ -1552,6 +1567,7 @@ async function run() {
         setSessionState("PAUSED")
         dLog("session", "session_pause_result", { time: dNowIso(), result: data })
         logLine(`✅ Session paused.${data?.ok === false ? " (server returned ok=false)" : ""}`)
+        await syncBoardOnce("after_session_pause", true)
       } catch (e) {
         dErr("session", "session_pause_error", { time: dNowIso(), message: String(e?.message || e), stack: e?.stack || null })
         logLine(String(e?.message || e))
@@ -1573,6 +1589,7 @@ async function run() {
       try {
         const data = await pingBackend(inDiscord)
         pingOut.textContent = JSON.stringify(data, null, 2)
+        await syncBoardOnce("after_ping", true)
       } catch (err) {
         dErr("ui", "ping_error", { time: dNowIso(), message: String(err?.message || err), stack: err?.stack || null })
         pingOut.textContent = `Erreur: ${err?.message ?? String(err)}`
@@ -1600,63 +1617,6 @@ async function run() {
       resolveHoverOwner(state.hover)
     }
   })()
-
-  async function pollBoard() {
-    if (polling) return
-    polling = true
-    while (polling) {
-      try {
-        const sinceBase = lastSince
-        let pageToken = null
-        let maxSeen = sinceBase
-        let changed = false
-        let pages = 0
-        let chunksTotal = 0
-
-        const started = dMsNow()
-        const vp = chunkViewportParams()
-
-        do {
-          pages++
-          const data = await getBoardBackend(inDiscord, sinceBase, 200, pageToken, { includeMeta: "true", ...vp })
-          const chunks = Array.isArray(data?.chunks) ? data.chunks : []
-          chunksTotal += chunks.length
-
-          if (chunks.length) {
-            await applyUpdateChunks(chunks, true)
-            changed = true
-          }
-
-          for (const c of chunks) {
-            if (c?.updatedAt) maxSeen = maxIso(maxSeen, c.updatedAt)
-          }
-          if (data?.serverNow) maxSeen = maxIso(maxSeen, data.serverNow)
-
-          pageToken = data?.nextPageToken || null
-        } while (pageToken)
-
-        lastSince = maxSeen
-
-        if (changed) {
-          const ms = Math.round(dMsNow() - started)
-          dLog("poll", "poll_board_changed", { time: dNowIso(), ms, pages, chunksTotal, lastSince, board: { w: board.w, h: board.h, chunkSize } })
-          render()
-          resolveHoverOwner(state.hover)
-        } else {
-          if (DEBUG_DEEP) dLog("poll", "poll_no_change", { time: dNowIso(), pages, lastSince })
-        }
-      } catch (e) {
-        dErr("poll", "poll_board_error", { time: dNowIso(), message: String(e?.message || e), stack: e?.stack || null })
-      }
-      await new Promise((r3) => setTimeout(r3, 1000))
-    }
-  }
-
-  pollBoard()
 }
 
-try {
-  run()
-} catch (e) {
-  showFatal(e)
-}
+run().catch(showFatal)
