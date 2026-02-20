@@ -1,7 +1,7 @@
 import "./style.css"
 import { DiscordSDK } from "@discord/embedded-app-sdk"
 
-console.log("MAIN.JS VERSION = BOARD_V3_HOVER_USER_CORSFIX_V2", new Date().toISOString())
+console.log("MAIN.JS VERSION = BOARD_V3_HOVER_USER_CORSFIX_V3_ADMIN_BTNS_VISIBLE", new Date().toISOString())
 
 const GATEWAY_BASE = "https://1224715390362324992.discordsays.com/gcp"
 
@@ -618,14 +618,42 @@ async function run() {
     el.style.display = hidden ? "none" : ""
   }
 
+  function setDisabled(id, disabled, titleIfDisabled = "") {
+    const el = $(id)
+    if (!el) return
+    el.disabled = Boolean(disabled)
+    if (disabled) {
+      if (titleIfDisabled) el.title = titleIfDisabled
+      el.style.opacity = "0.55"
+      el.style.cursor = "not-allowed"
+    } else {
+      el.title = ""
+      el.style.opacity = ""
+      el.style.cursor = ""
+    }
+  }
+
   function applyRoleUI(isAdmin) {
     window.__canPlace = true
+
     setHidden("reload", false)
-    setHidden("start", !isAdmin)
-    setHidden("pause", !isAdmin)
-    setHidden("resetSession", !isAdmin)
-    setHidden("snapshot", !isAdmin)
-    setHidden("clear", !isAdmin)
+    setHidden("fit", false)
+    setHidden("reset", false)
+    setHidden("clear", false)
+    setHidden("start", false)
+    setHidden("pause", false)
+    setHidden("resetSession", false)
+    setHidden("snapshot", false)
+
+    const lockMsg = "Admins only"
+
+    setDisabled("start", !isAdmin, lockMsg)
+    setDisabled("pause", !isAdmin, lockMsg)
+    setDisabled("resetSession", !isAdmin, lockMsg)
+    setDisabled("snapshot", !isAdmin, lockMsg)
+    setDisabled("reset", !isAdmin, lockMsg)
+    setDisabled("clear", !isAdmin, lockMsg)
+
     const brand = document.querySelector(".brandTitle")
     if (brand) brand.textContent = isAdmin ? "r/place viewer (ADMIN)" : "r/place viewer"
   }
@@ -807,30 +835,6 @@ async function run() {
       for (let x = 0; x < w; x++) {
         const v = bytes[srcRow + x]
         board.pixels[dstRow + x] = (v === undefined ? 1 : v)
-      }
-    }
-  }
-
-  function applyChunkMeta(cx, cy, bytes, inferredSize) {
-    const sz = Math.max(1, Math.floor(Number(inferredSize || chunkSize || 1)))
-    const ox = cx * sz
-    const oy = cy * sz
-    const maxW = board.w
-    const maxH = board.h
-    const w = Math.min(sz, Math.max(0, maxW - ox))
-    const h = Math.min(sz, Math.max(0, maxH - oy))
-    if (w <= 0 || h <= 0) return
-
-    const expected = sz * sz * 8
-    if (!bytes || bytes.length < expected) return
-
-    for (let y = 0; y < h; y++) {
-      for (let x = 0; x < w; x++) {
-        const pixIndex = (y * sz + x)
-        const off = pixIndex * 8
-        const userHash = u32le(bytes, off + 0)
-        const ts = u32le(bytes, off + 4)
-        setMetaAt(ox + x, oy + y, userHash, ts)
       }
     }
   }
@@ -1103,6 +1107,7 @@ async function run() {
   }
 
   $("reset").onclick = async () => {
+    if (!window.__isAdmin) return
     const b = $("reset")
     const prev = b ? b.textContent : "Reset"
     if (b) {
@@ -1130,6 +1135,7 @@ async function run() {
   const snapBtn = $("snapshot")
   if (snapBtn) {
     snapBtn.onclick = async () => {
+      if (!window.__isAdmin) return
       const prev = snapBtn.textContent
       snapBtn.disabled = true
       snapBtn.textContent = "Snapshotting..."
@@ -1150,6 +1156,7 @@ async function run() {
   }
 
   $("clear").onclick = () => {
+    if (!window.__isAdmin) return
     clearBoardLocal()
     logLine("🧹 Cleared locally.")
     render()
@@ -1159,6 +1166,7 @@ async function run() {
   const resetSessionBtn = $("resetSession")
   if (resetSessionBtn) {
     resetSessionBtn.onclick = async () => {
+      if (!window.__isAdmin) return
       const prevText = resetSessionBtn.textContent
       resetSessionBtn.disabled = true
       resetSessionBtn.textContent = "Resetting..."
