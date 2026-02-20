@@ -1250,7 +1250,6 @@ async function run() {
   pollBoard()
 }
 
-
 try {
   run()
 } catch (e) {
