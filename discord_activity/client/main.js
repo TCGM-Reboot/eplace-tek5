@@ -266,7 +266,7 @@ async function exchangeCodeForTokenViaApi(code, state) {
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ code, state })
+      body: JSON.stringify({ kind: "user", code, state })
     },
     { kind: "oauth_exchange", statePresent: Boolean(state), codeLen: String(code || "").length }
   )
@@ -299,97 +299,6 @@ async function exchangeCodeForTokenViaApi(code, state) {
   dGroupEnd()
   return accessToken
 }
-
-// async function loginDiscordActivity() {
-//   const loginId = dReqId()
-//   const started = dMsNow()
-
-//   const clientId = getDiscordClientId()
-//   dGroup("[login] loginDiscordActivity start", { loginId, clientId, origin: location.origin, href: location.href, search: location.search })
-//   if (!clientId) {
-//     dErr("login", "missing_client_id", { loginId })
-//     dGroupEnd()
-//     throw new Error("missing_client_id")
-//   }
-
-//   dLog("login", "sdk_construct", { loginId, clientId })
-//   const discordSdk = new DiscordSDK(clientId)
-
-//   dLog("login", "sdk_ready_wait", { loginId })
-//   await discordSdk.ready()
-//   dLog("login", "sdk_ready_ok", { loginId })
-
-//   const state = dReqId()
-//   try { sessionStorage.setItem("oauth_state", state) } catch (e) { dWarn("login", "sessionStorage_set_oauth_state_failed", { loginId, err: String(e?.message || e) }) }
-
-//   const redirectUri = `https://1224715390362324992.discordsays.com/oauth/callback`
-//   dLog("login", "authorize_call", { loginId, redirectUri, scopes: ["identify", "guilds.members.read"], prompt: "none" })
-
-//   let code = ""
-//   try {
-//     const authzStarted = dMsNow()
-//     const out = await discordSdk.commands.authorize({
-//       client_id: clientId,
-//       response_type: "code",
-//       state: "",
-//       prompt: "none",
-//       scope: ["identify", "guilds.members.read"]
-//     })
-//     code = out?.code ? String(out.code) : ""
-//     dLog("login", "authorize_ok", { loginId, ms: Math.round(dMsNow() - authzStarted), codePresent: Boolean(code), codeLen: code.length })
-//   } catch (e) {
-//     dErr("login", "authorize_failed", { loginId, message: String(e?.message || e), stack: e?.stack || null })
-//     dGroupEnd()
-//     throw e
-//   }
-
-//   const access_token = await exchangeCodeForTokenViaApi(code, state)
-//   dLog("login", "exchange_ok", { loginId, tokenLen: access_token.length })
-
-//   let auth = null
-//   try {
-//     const authStarted = dMsNow()
-//     dLog("login", "authenticate_call", { loginId })
-//     auth = await discordSdk.commands.authenticate({ access_token })
-//     dLog("login", "authenticate_ok", { loginId, ms: Math.round(dMsNow() - authStarted), hasUser: Boolean(auth?.user), hasAccessToken: Boolean(auth?.access_token) })
-//   } catch (e) {
-//     dErr("login", "authenticate_failed_call", { loginId, message: String(e?.message || e), stack: e?.stack || null })
-//     dGroupEnd()
-//     throw e
-//   }
-
-//   if (!auth?.user) {
-//     dErr("login", "authenticate_failed_no_user", { loginId, authKeys: auth ? Object.keys(auth) : null })
-//     dGroupEnd()
-//     throw new Error("authenticate_failed")
-//   }
-
-//   const u = {
-//     id: auth.user.id,
-//     username: auth.user.global_name || auth.user.username,
-//     avatar: auth.user.avatar,
-//     avatar_url: auth.user.avatar ? `https://cdn.discordapp.com/avatars/${auth.user.id}/${auth.user.avatar}.png?size=128` : ""
-//   }
-
-//   const guildId = discordSdk.guildId ? String(discordSdk.guildId) : ""
-//   const channelId = discordSdk.channelId ? String(discordSdk.channelId) : ""
-
-//   dLog("login", "sdk_context", { loginId, guildId, channelId, hasGuildId: Boolean(guildId), hasChannelId: Boolean(channelId) })
-
-//   setActivityUser(u)
-//   setActivityAuth({
-//     accessToken: access_token,
-//     guildId,
-//     channelId,
-//     clientId,
-//     at: dNowIso()
-//   })
-
-//   const ms = Math.round(dMsNow() - started)
-//   dLog("login", "login_done", { loginId, ms, user: { id: u.id, username: u.username, hasAvatar: Boolean(u.avatar) } })
-//   dGroupEnd()
-//   return u
-// }
 
 async function loginDiscordActivity() {
   const loginId = dReqId()
@@ -470,6 +379,8 @@ async function loginDiscordActivity() {
   setActivityUser(u)
   setActivityAuth({
     accessToken: userAccessToken,
+    userAccessToken: userAccessToken,
+    activityAccessToken: auth?.access_token ? String(auth.access_token) : "",
     guildId,
     channelId,
     clientId,
