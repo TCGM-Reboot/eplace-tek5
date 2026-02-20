@@ -424,10 +424,10 @@ async function pingBackend(inDiscord) {
     `${GATEWAY_BASE}/proxy`,
     {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...adminAuthHeaders(inDiscord) },
       body: JSON.stringify(payload)
     },
-    { kind: "proxy_ping", payloadPreview: payload }
+    { kind: "proxy_ping", payloadPreview: payload, hasAuthHeader: Boolean(getAccessTokenForAdmin(inDiscord)) }
   )
 
   if (!res.ok) throw new Error(`PING failed: ${meta.status} ${dSafeJson(data)}`)
@@ -578,10 +578,10 @@ async function placePixelBackend(inDiscord, x, y, colorHexOrInt) {
     `${GATEWAY_BASE}/proxy`,
     {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...adminAuthHeaders(inDiscord) },
       body: JSON.stringify(payload)
     },
-    { kind: "proxy_place_pixel", payloadPreview: payload }
+    { kind: "proxy_place_pixel", payloadPreview: payload, hasAuthHeader: Boolean(getAccessTokenForAdmin(inDiscord)) }
   )
 
   if (!res.ok) throw new Error(`PLACE_PIXEL failed: ${meta.status} ${dSafeJson(data)}`)
@@ -605,10 +605,10 @@ async function resolveUserHashBackend(userHash) {
     `${GATEWAY_BASE}/proxy`,
     {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...adminAuthHeaders(true) },
       body: JSON.stringify(payload)
     },
-    { kind: "proxy_resolve_userhash", payloadPreview: payload }
+    { kind: "proxy_resolve_userhash", payloadPreview: payload, hasAuthHeader: Boolean(getAccessTokenForAdmin(true)) }
   )
 
   if (!res.ok) throw new Error(`RESOLVE_USERHASH failed: ${meta.status} ${dSafeJson(data)}`)
