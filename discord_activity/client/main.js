@@ -127,11 +127,11 @@ async function exchangeCodeForTokenViaApi(code) {
   let data = null
   try { data = text ? JSON.parse(text) : null } catch { data = { raw: text } }
 
-  const tok = data?.access_token || data?.accessToken || null
-  if (!res.ok || !tok) {
+  if (!res.ok || !data?.access_token) {
     throw new Error(`token_exchange_failed ${res.status} ${JSON.stringify(data)}`)
   }
-  return String(tok)
+
+  return String(data.access_token)
 }
 
 async function loginDiscordActivity() {
