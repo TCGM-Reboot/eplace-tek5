@@ -117,7 +117,7 @@ function hexToIntColor(colorHex) {
 }
 
 async function exchangeCodeForTokenViaApi(code) {
-  const res = await fetch(`${GATEWAY_BASE}/oauth/exchange`, {
+  const res = await fetch(`${GATEWAY_BASE}/api/token`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ code })
@@ -225,6 +225,7 @@ async function pingBackend(inDiscord) {
 async function sessionStartBackend(inDiscord) {
   const reqId = makeReqId()
   const userId = await getUserIdForAction(inDiscord)
+  const auth = await requireAuthForWorker(inDiscord)
 
   const res = await fetch(`${GATEWAY_BASE}/proxy`, {
     method: "POST",
@@ -236,13 +237,15 @@ async function sessionStartBackend(inDiscord) {
         at: new Date().toISOString(),
         reqId,
         userId: userId || null,
+        accessToken: auth.accessToken,
+        guildId: auth.guildId
       }
     })
   })
 
   const text = await res.text().catch(() => "")
   let data = null
- try { data = text ? JSON.parse(text) : null } catch { data = { raw: text } }
+  try { data = text ? JSON.parse(text) : null } catch { data = { raw: text } }
   if (!res.ok) throw new Error(`SESSION_START failed: ${res.status} ${JSON.stringify(data)}`)
   return data
 }
@@ -250,6 +253,7 @@ async function sessionStartBackend(inDiscord) {
 async function sessionPauseBackend(inDiscord) {
   const reqId = makeReqId()
   const userId = await getUserIdForAction(inDiscord)
+  const auth = await requireAuthForWorker(inDiscord)
 
   const res = await fetch(`${GATEWAY_BASE}/proxy`, {
     method: "POST",
@@ -261,6 +265,8 @@ async function sessionPauseBackend(inDiscord) {
         at: new Date().toISOString(),
         reqId,
         userId: userId || null,
+        accessToken: auth.accessToken,
+        guildId: auth.guildId
       }
     })
   })
@@ -275,6 +281,7 @@ async function sessionPauseBackend(inDiscord) {
 async function resetBoardBackend(inDiscord) {
   const reqId = makeReqId()
   const userId = await getUserIdForAction(inDiscord)
+  const auth = await requireAuthForWorker(inDiscord)
 
   const payload = {
     type: "RESET_BOARD",
@@ -283,6 +290,8 @@ async function resetBoardBackend(inDiscord) {
       at: new Date().toISOString(),
       reqId,
       userId,
+      accessToken: auth.accessToken,
+      guildId: auth.guildId
     }
   }
 
@@ -303,6 +312,7 @@ async function resetBoardBackend(inDiscord) {
 async function snapshotBackend(inDiscord, region = null) {
   const reqId = makeReqId()
   const userId = await getUserIdForAction(inDiscord)
+  const auth = await requireAuthForWorker(inDiscord)
 
   const payload = {
     type: "SNAPSHOT_CREATE",
@@ -312,6 +322,8 @@ async function snapshotBackend(inDiscord, region = null) {
       reqId,
       userId,
       region: region || null,
+      accessToken: auth.accessToken,
+      guildId: auth.guildId
     }
   }
 
@@ -613,6 +625,8 @@ async function run() {
   const view = { zoom: 6, panX: 0, panY: 0 }
   const state = { selectedColor: 2, hover: null, isDragging: false, dragStart: null, hoverHash: 0, hoverTs: 0 }
 
+  let sessionState = "RUNNING"
+
   let board = {
     w: 100,
     h: 100,
@@ -627,6 +641,14 @@ async function run() {
 
   const canvas = $("cv")
   const ctx = canvas.getContext("2d", { alpha: false })
+
+  function setSessionState(next) {
+    sessionState = String(next || "").toUpperCase() === "PAUSED" ? "PAUSED" : "RUNNING"
+    const wrap = canvas?.parentElement
+    if (wrap) wrap.style.opacity = sessionState === "PAUSED" ? "0.9" : "1"
+    canvas.style.cursor = sessionState === "PAUSED" ? "not-allowed" : "crosshair"
+    buildPalette()
+  }
 
   function clamp(v, a, b) { return Math.max(a, Math.min(b, v)) }
 
@@ -911,6 +933,11 @@ async function run() {
 
   canvas.addEventListener("click", async (e) => {
     if (state.isDragging) return
+    if (sessionState === "PAUSED") {
+      logLine("⏸️ Paused: placing pixels is disabled.")
+      return
+    }
+
     const p = worldPixelFromEvent(e)
     if (!p) return
 
@@ -937,7 +964,9 @@ async function run() {
       b.style.border = (i === state.selectedColor)
         ? "2px solid rgba(255,255,255,0.95)"
         : "1px solid rgba(255,255,255,0.25)"
+      b.disabled = sessionState === "PAUSED"
       b.onclick = () => {
+        if (sessionState === "PAUSED") return
         state.selectedColor = i
         buildPalette()
         render()
@@ -1105,6 +1134,7 @@ async function run() {
       try {
         logLine("⏳ Session start...")
         const data = await sessionStartBackend(inDiscord)
+        setSessionState("RUNNING")
         logLine(`✅ Session started.${data?.ok === false ? " (server returned ok=false)" : ""}`)
       } catch (e) {
         logLine(String(e?.message || e))
@@ -1124,6 +1154,7 @@ async function run() {
       try {
         logLine("⏳ Session pause...")
         const data = await sessionPauseBackend(inDiscord)
+        setSessionState("PAUSED")
         logLine(`✅ Session paused.${data?.ok === false ? " (server returned ok=false)" : ""}`)
       } catch (e) {
         logLine(String(e?.message || e))
@@ -1154,6 +1185,7 @@ async function run() {
     })
   }
 
+  setSessionState(sessionState)
   buildPalette()
 
   ;(async () => {
