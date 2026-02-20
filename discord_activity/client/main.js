@@ -682,7 +682,14 @@ async function run() {
 
   const inDiscord = isProbablyDiscordActivity()
   const $ = (id) => document.getElementById(id)
-  const logLine = (msg) => { $("status").textContent = msg }
+  const logLine = (msg) => {
+    const el = $("status")
+    if (!el) {
+      console.warn("logLine: #status missing; msg=", msg)
+      return
+    }
+    el.textContent = msg
+  }
 
   async function attemptLogin() {
     if (!inDiscord) {
