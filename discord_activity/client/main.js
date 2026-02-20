@@ -597,9 +597,9 @@ async function gunzipBytes(bytes) {
   return new Uint8Array(ab)
 }
 
-function guessSquareSize(n) {
-  const s = Math.floor(Math.sqrt(Math.max(0, n)))
-  if (s * s === n) return s
+function guessSquareSizeByStride(n, stride) {
+  const s = Math.floor(Math.sqrt(Math.max(0, Math.floor(n / Math.max(1, stride)))))
+  if (s > 0 && s * s * stride === n) return s
   return null
 }
 
@@ -710,22 +710,56 @@ async function run() {
     "#888888", "#ff8800", "#8844ff", "#44ff88", "#ff4444", "#4444ff", "#222222", "#cccccc"
   ]
 
+  const paletteRgb = palette.map((hex) => {
+    const h = hex.replace("#", "")
+    const r = parseInt(h.slice(0, 2), 16) | 0
+    const g = parseInt(h.slice(2, 4), 16) | 0
+    const b = parseInt(h.slice(4, 6), 16) | 0
+    return { r, g, b }
+  })
+
+  const paletteKeyToIndex = new Map()
+  for (let i = 0; i < paletteRgb.length; i++) {
+    const c = paletteRgb[i]
+    paletteKeyToIndex.set(`${c.r},${c.g},${c.b}`, i)
+  }
+
+  function nearestPaletteIndex(r, g, b) {
+    const key = `${r},${g},${b}`
+    const exact = paletteKeyToIndex.get(key)
+    if (exact != null) return exact
+    let bestI = 0
+    let bestD = Infinity
+    for (let i = 0; i < paletteRgb.length; i++) {
+      const c = paletteRgb[i]
+      const dr = r - c.r
+      const dg = g - c.g
+      const db = b - c.b
+      const d = dr * dr + dg * dg + db * db
+      if (d < bestD) {
+        bestD = d
+        bestI = i
+      }
+    }
+    return bestI
+  }
+
   const view = { zoom: 6, panX: 0, panY: 0 }
   const state = { selectedColor: 2, hover: null, isDragging: false, dragStart: null, hoverHash: 0, hoverTs: 0 }
 
   let sessionState = "RUNNING"
 
   let board = {
-    w: 100,
-    h: 100,
-    pixels: new Uint8Array(100 * 100),
-    metaHash: new Uint32Array(100 * 100),
-    metaTs: new Uint32Array(100 * 100),
+    w: 128,
+    h: 128,
+    pixels: new Uint8Array(128 * 128),
+    metaHash: new Uint32Array(128 * 128),
+    metaTs: new Uint32Array(128 * 128),
     colors: 16,
     cooldownMs: 10000
   }
 
-  let chunkSize = 10
+  let chunkSize = 64
 
   const canvas = $("cv")
   const ctx = canvas.getContext("2d", { alpha: false })
@@ -799,12 +833,36 @@ async function run() {
     const W = Math.max(1, Math.floor(Number(w || 0)))
     const H = Math.max(1, Math.floor(Number(h || 0)))
     if (W === board.w && H === board.h && board.pixels?.length === W * H) return
+    const oldW = board.w
+    const oldH = board.h
+    const oldP = board.pixels
+    const oldHh = board.metaHash
+    const oldT = board.metaTs
+
     board.w = W
     board.h = H
     board.pixels = new Uint8Array(W * H)
     board.pixels.fill(1)
     board.metaHash = new Uint32Array(W * H)
     board.metaTs = new Uint32Array(W * H)
+
+    if (oldP && oldP.length === oldW * oldH) {
+      const copyW = Math.min(oldW, W)
+      const copyH = Math.min(oldH, H)
+      for (let y = 0; y < copyH; y++) {
+        const src = y * oldW
+        const dst = y * W
+        board.pixels.set(oldP.subarray(src, src + copyW), dst)
+        if (oldHh && oldHh.length === oldW * oldH) board.metaHash.set(oldHh.subarray(src, src + copyW), dst)
+        if (oldT && oldT.length === oldW * oldH) board.metaTs.set(oldT.subarray(src, src + copyW), dst)
+      }
+    }
+  }
+
+  function ensureBoardAtLeast(w, h) {
+    const W = Math.max(board.w, Math.max(1, Math.floor(Number(w || 0))))
+    const H = Math.max(board.h, Math.max(1, Math.floor(Number(h || 0))))
+    if (W !== board.w || H !== board.h) ensureBoardSize(W, H)
   }
 
   const userHashCache = new Map()
@@ -817,73 +875,78 @@ async function run() {
     userHashCache.clear()
   }
 
-  function applyChunk(cx, cy, bytes, inferredSize) {
-    const sz = Math.max(1, Math.floor(Number(inferredSize || chunkSize || 1)))
+  function applyChunkRgba(cx, cy, bytes, sz) {
     const ox = cx * sz
     const oy = cy * sz
+    ensureBoardAtLeast(ox + sz, oy + sz)
+
     const maxW = board.w
     const w = Math.min(sz, Math.max(0, maxW - ox))
     const h = Math.min(sz, Math.max(0, board.h - oy))
     if (w <= 0 || h <= 0) return
+
     for (let y = 0; y < h; y++) {
-      const srcRow = y * sz
+      const srcRow = y * sz * 4
       const dstRow = (oy + y) * maxW + ox
       for (let x = 0; x < w; x++) {
-        const v = bytes[srcRow + x]
-        const c = (v === undefined ? 1 : v)
-        board.pixels[dstRow + x] = c
+        const i = srcRow + x * 4
+        const r = bytes[i + 0] | 0
+        const g = bytes[i + 1] | 0
+        const b = bytes[i + 2] | 0
+        const a = bytes[i + 3] | 0
+        const colorId = (a === 0) ? 1 : nearestPaletteIndex(r, g, b)
+        board.pixels[dstRow + x] = colorId
       }
     }
   }
 
-  async function loadBoardFromServerlessFull() {
-    const since = new Date(0).toISOString()
-    const limit = 500
-    let pageToken = null
-    let metaApplied = false
-    let any = 0
+  function applyChunkMeta(cx, cy, bytes, sz) {
+    const ox = cx * sz
+    const oy = cy * sz
+    ensureBoardAtLeast(ox + sz, oy + sz)
 
-    while (true) {
-      const data = await getBoardBackend(inDiscord, since, limit, pageToken, { includeMeta: "true" })
-      const chunks = Array.isArray(data?.chunks) ? data.chunks : []
+    const maxW = board.w
+    const w = Math.min(sz, Math.max(0, maxW - ox))
+    const h = Math.min(sz, Math.max(0, board.h - oy))
+    if (w <= 0 || h <= 0) return
 
-      for (const c of chunks) {
-        if (!metaApplied && c?.metaGzipB64) {
-          const metaBytes = await gunzipBytes(b64ToBytes(c.metaGzipB64))
-          const metaTxt = new TextDecoder().decode(metaBytes)
-          let meta = null
-          try { meta = metaTxt ? JSON.parse(metaTxt) : null } catch { meta = null }
-          if (meta && (meta.w || meta.h || meta.colors || meta.cooldownMs || meta.chunkSize)) {
-            if (meta.w && meta.h) ensureBoardSize(meta.w, meta.h)
-            if (meta.colors) board.colors = Number(meta.colors) || board.colors
-            if (meta.cooldownMs) board.cooldownMs = Number(meta.cooldownMs) || board.cooldownMs
-            if (meta.chunkSize) chunkSize = Number(meta.chunkSize) || chunkSize
-            metaApplied = true
-          }
-        }
-
-        if (c?.dataGzipB64) {
-          const bytes = await gunzipBytes(b64ToBytes(c.dataGzipB64))
-          let sz = chunkSize
-          if (!sz || sz <= 0) {
-            const g = guessSquareSize(bytes.length)
-            if (g) sz = g
-          }
-          if (sz && sz > 0) applyChunk(Number(c.cx || 0), Number(c.cy || 0), bytes, sz)
-          any++
-        }
+    const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+    for (let y = 0; y < h; y++) {
+      const srcRow = y * sz * 8
+      const dstRow = (oy + y) * maxW + ox
+      for (let x = 0; x < w; x++) {
+        const i = srcRow + x * 8
+        const userHash = dv.getUint32(i + 0, true) >>> 0
+        const ts = dv.getUint32(i + 4, true) >>> 0
+        const di = dstRow + x
+        board.metaHash[di] = userHash
+        board.metaTs[di] = ts
       }
+    }
+  }
 
-      pageToken = data?.nextPageToken || null
-      if (!pageToken) break
+  async function applyServerChunk(c, wantMeta) {
+    const cx = Number(c?.cx || 0)
+    const cy = Number(c?.cy || 0)
+
+    if (c?.dataGzipB64) {
+      const raw = await gunzipBytes(b64ToBytes(c.dataGzipB64))
+      let sz = chunkSize
+      const guessed = guessSquareSizeByStride(raw.length, 4)
+      if (guessed) sz = guessed
+      if (sz > 0) {
+        chunkSize = sz
+        applyChunkRgba(cx, cy, raw, sz)
+      }
     }
 
-    if (!metaApplied) {
-      if (!chunkSize || chunkSize <= 0) chunkSize = 10
-      if (!board?.pixels?.length) ensureBoardSize(board.w || 100, board.h || 100)
+    if (wantMeta && c?.metaGzipB64) {
+      const raw = await gunzipBytes(b64ToBytes(c.metaGzipB64))
+      let sz = chunkSize
+      const guessed = guessSquareSizeByStride(raw.length, 8)
+      if (guessed) sz = guessed
+      if (sz > 0) applyChunkMeta(cx, cy, raw, sz)
     }
-
-    return { chunksApplied: any, metaApplied }
   }
 
   function render() {
@@ -1020,26 +1083,23 @@ async function run() {
   let polling = false
   let placing = false
 
-  async function applyUpdateChunks(chunks) {
+  async function applyUpdateChunks(chunks, wantMeta) {
     console.groupCollapsed(`[apply_update_chunks] n=${chunks?.length ?? 0}`)
     console.log("time", nowIso())
     console.log("chunkSize", chunkSize)
+    console.log("wantMeta", wantMeta)
+    if (chunks?.length) {
+      console.log("first", chunks[0])
+      console.log("last", chunks[chunks.length - 1])
+    }
     console.groupEnd()
 
-    for (const c of chunks) {
-      if (c?.dataGzipB64) {
-        const bytes = await gunzipBytes(b64ToBytes(c.dataGzipB64))
-        let sz = chunkSize
-        if (!sz || sz <= 0) {
-          const g = guessSquareSize(bytes.length)
-          if (g) sz = g
-        }
-        if (sz && sz > 0) applyChunk(Number(c.cx || 0), Number(c.cy || 0), bytes, sz)
-      }
+    for (const c of (chunks || [])) {
+      await applyServerChunk(c, wantMeta)
     }
   }
 
-  async function quickGetBoardOnce(reason = "manual") {
+  async function quickGetBoardOnce(reason = "manual", wantMeta = true) {
     const started = msNow()
     const since0 = lastSince
     logLine("⏳ Fetching latest chunks...")
@@ -1050,6 +1110,7 @@ async function run() {
     console.log("since", since0)
     console.log("limit", 500)
     console.log("chunkSize", chunkSize)
+    console.log("wantMeta", wantMeta)
     console.groupEnd()
 
     let pageToken = null
@@ -1060,7 +1121,7 @@ async function run() {
 
     do {
       pages++
-      const data = await getBoardBackend(inDiscord, lastSince, 500, pageToken, {})
+      const data = await getBoardBackend(inDiscord, lastSince, 500, pageToken, wantMeta ? { includeMeta: "true" } : {})
       const chunks = Array.isArray(data?.chunks) ? data.chunks : []
       totalChunks += chunks.length
 
@@ -1068,6 +1129,9 @@ async function run() {
       console.log("time", nowIso())
       console.log("since_used", lastSince)
       console.log("sinceEcho", data?.sinceEcho ?? null)
+      console.log("sinceEffectiveEcho", data?.sinceEffectiveEcho ?? null)
+      console.log("serverNow", data?.serverNow ?? null)
+      console.log("skewMs", data?.skewMs ?? null)
       console.log("returned", data?.returned ?? chunks.length)
       console.log("chunks_len", chunks.length)
       console.log("nextPageToken", data?.nextPageToken || null)
@@ -1078,12 +1142,14 @@ async function run() {
       console.groupEnd()
 
       if (chunks.length) {
-        await applyUpdateChunks(chunks)
+        await applyUpdateChunks(chunks, wantMeta)
         changed = true
       }
+
       for (const c of chunks) {
         if (c?.updatedAt && String(c.updatedAt) > String(maxUpdatedAt)) maxUpdatedAt = String(c.updatedAt)
       }
+
       pageToken = data?.nextPageToken || null
     } while (pageToken)
 
@@ -1097,6 +1163,7 @@ async function run() {
     console.log("totalChunks", totalChunks)
     console.log("changed", changed)
     console.log("lastSince_after", lastSince)
+    console.log("board", { w: board.w, h: board.h, chunkSize })
     console.groupEnd()
 
     if (changed) {
@@ -1120,21 +1187,19 @@ async function run() {
 
     clearBoardLocal()
     lastSince = new Date(0).toISOString()
-    const r2 = await loadBoardFromServerlessFull()
+
+    await quickGetBoardOnce("full_reload", true)
 
     console.groupCollapsed("[full_reload_from_serverless] done")
     console.log("time", nowIso())
-    console.log("result", r2)
     console.log("board_after", { w: board.w, h: board.h, chunkSize, colors: board.colors, cooldownMs: board.cooldownMs })
     console.log("lastSince_after", lastSince)
     console.groupEnd()
 
-    logLine(`✅ Board reloaded (chunks=${r2.chunksApplied}${r2.metaApplied ? ", meta" : ""}).`)
+    logLine("✅ Board reloaded.")
     $("fit").click()
     render()
     resolveHoverOwner(state.hover)
-
-    await quickGetBoardOnce("post_full_reload_sync")
   }
 
   canvas.addEventListener("click", async (e) => {
@@ -1156,6 +1221,7 @@ async function run() {
     const user = await getUserForPayload(inDiscord)
     const picked = palette[state.selectedColor]
     const colorInt = hexToIntColor(picked)
+
     console.groupCollapsed(`[ui_click_place] ${p.x},${p.y}`)
     console.log("time", nowIso())
     console.log("inDiscord", inDiscord)
@@ -1177,7 +1243,7 @@ async function run() {
       console.groupEnd()
 
       logLine(`✅ Place requested @ ${p.x},${p.y}. Syncing from server...`)
-      await quickGetBoardOnce("after_place_pixel")
+      await quickGetBoardOnce("after_place_pixel", true)
     } catch (err) {
       console.groupCollapsed(`[place_pixel_error] ${p.x},${p.y}`)
       console.log("time", nowIso())
@@ -1235,7 +1301,7 @@ async function run() {
       b.textContent = "Reloading..."
     }
     try {
-      await quickGetBoardOnce("reload_button")
+      await quickGetBoardOnce("reload_button", true)
     } catch (e) {
       console.groupCollapsed("[reload_button_error]")
       console.log("time", nowIso())
@@ -1409,7 +1475,7 @@ async function run() {
 
   ;(async () => {
     try {
-      logLine("⏳ Loading board from serverless...")
+      logLine("⏳ Loading board from server...")
       console.groupCollapsed("[startup_load_board] start")
       console.log("time", nowIso())
       console.groupEnd()
@@ -1422,7 +1488,7 @@ async function run() {
       console.log("time", nowIso())
       console.error(e)
       console.groupEnd()
-      logLine(String(e?.message || "⚠️ serverless /board unreachable"))
+      logLine(String(e?.message || "⚠️ server /board unreachable"))
       $("fit").click()
       render()
       resolveHoverOwner(state.hover)
@@ -1444,12 +1510,12 @@ async function run() {
 
         do {
           pages++
-          const data = await getBoardBackend(inDiscord, lastSince, 200, pageToken, {})
+          const data = await getBoardBackend(inDiscord, lastSince, 200, pageToken, { includeMeta: "true" })
           const chunks = Array.isArray(data?.chunks) ? data.chunks : []
           chunksTotal += chunks.length
 
           if (chunks.length) {
-            await applyUpdateChunks(chunks)
+            await applyUpdateChunks(chunks, true)
             changed = true
           }
           for (const c of chunks) {
@@ -1468,6 +1534,7 @@ async function run() {
           console.log("pages", pages)
           console.log("chunksTotal", chunksTotal)
           console.log("lastSince", lastSince)
+          console.log("board", { w: board.w, h: board.h, chunkSize })
           console.groupEnd()
           render()
           resolveHoverOwner(state.hover)
