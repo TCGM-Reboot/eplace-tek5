@@ -116,19 +116,91 @@ function hexToIntColor(colorHex) {
   return parseInt(s, 10) >>> 0
 }
 
-async function exchangeCodeForTokenViaApi(code) {
-  const res = await fetch(`${GATEWAY_BASE}/api/token`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ code })
-  })
+function nowIso() {
+  return new Date().toISOString()
+}
 
-  const text = await res.text().catch(() => "")
-  let data = null
-  try { data = text ? JSON.parse(text) : null } catch { data = { raw: text } }
+function msNow() {
+  try { return performance.now() } catch { return Date.now() }
+}
+
+function safeJson(o, maxLen = 4000) {
+  let s = ""
+  try { s = JSON.stringify(o) } catch { s = String(o) }
+  if (s.length > maxLen) s = s.slice(0, maxLen) + `…(trunc ${s.length - maxLen})`
+  return s
+}
+
+function headersToObj(h) {
+  const out = {}
+  try {
+    if (!h) return out
+    h.forEach((v, k) => { out[String(k)] = String(v) })
+  } catch { }
+  return out
+}
+
+function parseMaybeJson(text) {
+  if (!text) return null
+  try { return JSON.parse(text) } catch { return { raw: text } }
+}
+
+async function fetchDebug(url, opts, info) {
+  const id = makeReqId()
+  const started = msNow()
+  const u = typeof url === "string" ? url : String(url?.toString?.() ?? url)
+  const method = (opts?.method || "GET").toUpperCase()
+  const headers = opts?.headers ? (opts.headers instanceof Headers ? headersToObj(opts.headers) : opts.headers) : {}
+  const meta = { id, t: nowIso(), kind: info?.kind || "fetch", method, url: u, headers, info: info || null }
+
+  console.groupCollapsed(`[${meta.kind}] -> ${method} ${u}`)
+  console.log("meta", meta)
+
+  let res
+  let text = ""
+  try {
+    res = await fetch(url, opts)
+    const ended = msNow()
+    meta.status = res.status
+    meta.ok = res.ok
+    meta.ms = Math.round(ended - started)
+    meta.resHeaders = headersToObj(res.headers)
+    console.log("response_meta", { status: meta.status, ok: meta.ok, ms: meta.ms, headers: meta.resHeaders })
+
+    text = await res.text().catch(() => "")
+    meta.bodyLen = text.length
+    const preview = text.length > 1200 ? text.slice(0, 1200) + `…(trunc ${text.length - 1200})` : text
+    console.log("response_text_preview", preview)
+
+    const parsed = parseMaybeJson(text)
+    if (parsed && parsed.raw === undefined) console.log("response_json", parsed)
+    console.groupEnd()
+
+    return { id, res, text, data: parsed, meta }
+  } catch (err) {
+    const ended = msNow()
+    meta.ms = Math.round(ended - started)
+    meta.error = { message: String(err?.message || err), stack: err?.stack || null }
+    console.error("fetch_error", meta)
+    console.groupEnd()
+    throw err
+  }
+}
+
+async function exchangeCodeForTokenViaApi(code) {
+  const payload = { code }
+  const { res, data, meta } = await fetchDebug(
+    `${GATEWAY_BASE}/api/token`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    },
+    { kind: "token_exchange", payloadPreview: payload }
+  )
 
   if (!res.ok || !data?.access_token) {
-    throw new Error(`token_exchange_failed ${res.status} ${JSON.stringify(data)}`)
+    throw new Error(`token_exchange_failed ${meta.status} ${safeJson(data)}`)
   }
 
   return String(data.access_token)
@@ -170,7 +242,7 @@ async function loginDiscordActivity() {
     guildId,
     channelId,
     clientId,
-    at: new Date().toISOString()
+    at: nowIso()
   })
 
   return u
@@ -201,24 +273,27 @@ async function pingBackend(inDiscord) {
   const reqId = makeReqId()
   const user = await getUserForPayload(inDiscord)
 
-  const res = await fetch(`${GATEWAY_BASE}/proxy`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      type: "PING",
-      payload: {
-        from: "activity",
-        at: new Date().toISOString(),
-        reqId,
-        user
-      }
-    })
-  })
+  const payload = {
+    type: "PING",
+    payload: {
+      from: "activity",
+      at: nowIso(),
+      reqId,
+      user
+    }
+  }
 
-  const text = await res.text().catch(() => "")
-  let data = null
-  try { data = text ? JSON.parse(text) : null } catch { data = { raw: text } }
-  if (!res.ok) throw new Error(`PING failed: ${res.status} ${JSON.stringify(data)}`)
+  const { res, data, meta } = await fetchDebug(
+    `${GATEWAY_BASE}/proxy`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    },
+    { kind: "proxy_ping", payloadPreview: payload }
+  )
+
+  if (!res.ok) throw new Error(`PING failed: ${meta.status} ${safeJson(data)}`)
   return data
 }
 
@@ -227,26 +302,29 @@ async function sessionStartBackend(inDiscord) {
   const userId = await getUserIdForAction(inDiscord)
   const auth = await requireAuthForWorker(inDiscord)
 
-  const res = await fetch(`${GATEWAY_BASE}/proxy`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      type: "SESSION_START",
-      payload: {
-        from: "activity",
-        at: new Date().toISOString(),
-        reqId,
-        userId: userId || null,
-        accessToken: auth.accessToken,
-        guildId: auth.guildId
-      }
-    })
-  })
+  const payload = {
+    type: "SESSION_START",
+    payload: {
+      from: "activity",
+      at: nowIso(),
+      reqId,
+      userId: userId || null,
+      accessToken: auth.accessToken,
+      guildId: auth.guildId
+    }
+  }
 
-  const text = await res.text().catch(() => "")
-  let data = null
-  try { data = text ? JSON.parse(text) : null } catch { data = { raw: text } }
-  if (!res.ok) throw new Error(`SESSION_START failed: ${res.status} ${JSON.stringify(data)}`)
+  const { res, data, meta } = await fetchDebug(
+    `${GATEWAY_BASE}/proxy`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    },
+    { kind: "proxy_session_start", payloadPreview: payload }
+  )
+
+  if (!res.ok) throw new Error(`SESSION_START failed: ${meta.status} ${safeJson(data)}`)
   return data
 }
 
@@ -255,26 +333,29 @@ async function sessionPauseBackend(inDiscord) {
   const userId = await getUserIdForAction(inDiscord)
   const auth = await requireAuthForWorker(inDiscord)
 
-  const res = await fetch(`${GATEWAY_BASE}/proxy`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      type: "SESSION_PAUSE",
-      payload: {
-        from: "activity",
-        at: new Date().toISOString(),
-        reqId,
-        userId: userId || null,
-        accessToken: auth.accessToken,
-        guildId: auth.guildId
-      }
-    })
-  })
+  const payload = {
+    type: "SESSION_PAUSE",
+    payload: {
+      from: "activity",
+      at: nowIso(),
+      reqId,
+      userId: userId || null,
+      accessToken: auth.accessToken,
+      guildId: auth.guildId
+    }
+  }
 
-  const text = await res.text().catch(() => "")
-  let data = null
-  try { data = text ? JSON.parse(text) : null } catch { data = { raw: text } }
-  if (!res.ok) throw new Error(`SESSION_PAUSE failed: ${res.status} ${JSON.stringify(data)}`)
+  const { res, data, meta } = await fetchDebug(
+    `${GATEWAY_BASE}/proxy`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    },
+    { kind: "proxy_session_pause", payloadPreview: payload }
+  )
+
+  if (!res.ok) throw new Error(`SESSION_PAUSE failed: ${meta.status} ${safeJson(data)}`)
   return data
 }
 
@@ -287,7 +368,7 @@ async function resetBoardBackend(inDiscord) {
     type: "RESET_BOARD",
     payload: {
       from: "activity",
-      at: new Date().toISOString(),
+      at: nowIso(),
       reqId,
       userId,
       accessToken: auth.accessToken,
@@ -295,17 +376,17 @@ async function resetBoardBackend(inDiscord) {
     }
   }
 
-  const res = await fetch(`${GATEWAY_BASE}/proxy`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload)
-  })
+  const { res, data, meta } = await fetchDebug(
+    `${GATEWAY_BASE}/proxy`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    },
+    { kind: "proxy_reset_board", payloadPreview: payload }
+  )
 
-  const text = await res.text().catch(() => "")
-  let data = null
-  try { data = text ? JSON.parse(text) : null } catch { data = { raw: text } }
-
-  if (!res.ok) throw new Error(`RESET_BOARD failed: ${res.status} ${JSON.stringify(data)}`)
+  if (!res.ok) throw new Error(`RESET_BOARD failed: ${meta.status} ${safeJson(data)}`)
   return data
 }
 
@@ -318,7 +399,7 @@ async function snapshotBackend(inDiscord, region = null) {
     type: "SNAPSHOT_CREATE",
     payload: {
       from: "activity",
-      at: new Date().toISOString(),
+      at: nowIso(),
       reqId,
       userId,
       region: region || null,
@@ -327,17 +408,17 @@ async function snapshotBackend(inDiscord, region = null) {
     }
   }
 
-  const res = await fetch(`${GATEWAY_BASE}/proxy`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload)
-  })
+  const { res, data, meta } = await fetchDebug(
+    `${GATEWAY_BASE}/proxy`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    },
+    { kind: "proxy_snapshot_create", payloadPreview: payload }
+  )
 
-  const text = await res.text().catch(() => "")
-  let data = null
-  try { data = text ? JSON.parse(text) : null } catch { data = { raw: text } }
-
-  if (!res.ok) throw new Error(`SNAPSHOT_CREATE failed: ${res.status} ${JSON.stringify(data)}`)
+  if (!res.ok) throw new Error(`SNAPSHOT_CREATE failed: ${meta.status} ${safeJson(data)}`)
   return data
 }
 
@@ -346,52 +427,58 @@ async function placePixelBackend(inDiscord, x, y, colorHexOrInt) {
   const user = await getUserForPayload(inDiscord)
   const color = hexToIntColor(colorHexOrInt)
 
-  const res = await fetch(`${GATEWAY_BASE}/proxy`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      type: "PLACE_PIXEL",
-      payload: {
-        from: "activity",
-        at: new Date().toISOString(),
-        reqId,
-        userId: user?.id,
-        username: user?.username ?? user?.global_name ?? user?.displayName ?? null,
-        x,
-        y,
-        color
-      }
-    })
-  })
+  const payload = {
+    type: "PLACE_PIXEL",
+    payload: {
+      from: "activity",
+      at: nowIso(),
+      reqId,
+      userId: user?.id,
+      username: user?.username ?? user?.global_name ?? user?.displayName ?? null,
+      x,
+      y,
+      color
+    }
+  }
 
-  const text = await res.text().catch(() => "")
-  let data = null
-  try { data = text ? JSON.parse(text) : null } catch { data = { raw: text } }
+  const { res, data, meta } = await fetchDebug(
+    `${GATEWAY_BASE}/proxy`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    },
+    { kind: "proxy_place_pixel", payloadPreview: payload }
+  )
 
-  if (!res.ok) throw new Error(`PLACE_PIXEL failed: ${res.status} ${JSON.stringify(data)}`)
+  if (!res.ok) throw new Error(`PLACE_PIXEL failed: ${meta.status} ${safeJson(data)}`)
   return data
 }
 
 async function resolveUserHashBackend(userHash) {
   const reqId = makeReqId()
-  const res = await fetch(`${GATEWAY_BASE}/proxy`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      type: "RESOLVE_USERHASH",
-      payload: {
-        from: "activity",
-        at: new Date().toISOString(),
-        reqId,
-        userHash: String(userHash)
-      }
-    })
-  })
 
-  const text = await res.text().catch(() => "")
-  let data = null
-  try { data = text ? JSON.parse(text) : null } catch { data = { raw: text } }
-  if (!res.ok) throw new Error(`RESOLVE_USERHASH failed: ${res.status} ${JSON.stringify(data)}`)
+  const payload = {
+    type: "RESOLVE_USERHASH",
+    payload: {
+      from: "activity",
+      at: nowIso(),
+      reqId,
+      userHash: String(userHash)
+    }
+  }
+
+  const { res, data, meta } = await fetchDebug(
+    `${GATEWAY_BASE}/proxy`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    },
+    { kind: "proxy_resolve_userhash", payloadPreview: payload }
+  )
+
+  if (!res.ok) throw new Error(`RESOLVE_USERHASH failed: ${meta.status} ${safeJson(data)}`)
   return data
 }
 
@@ -406,18 +493,19 @@ async function getBoardBackend(inDiscord, since, limit = 200, pageToken = null, 
     url.searchParams.set(k, String(v))
   }
 
-  const res = await fetch(url.toString(), {
-    method: "GET",
-    mode: "cors",
-    credentials: "omit",
-    cache: "no-store",
-    redirect: "follow"
-  })
+  const { res, data, meta } = await fetchDebug(
+    url.toString(),
+    {
+      method: "GET",
+      mode: "cors",
+      credentials: "omit",
+      cache: "no-store",
+      redirect: "follow"
+    },
+    { kind: "get_board", inDiscord, since: since ?? null, limit, pageToken: pageToken || null, extra }
+  )
 
-  const text = await res.text().catch(() => "")
-  let data = null
-  try { data = text ? JSON.parse(text) : null } catch { data = { raw: text } }
-  if (!res.ok) throw new Error(`GET_BOARD failed: ${res.status} ${JSON.stringify(data)}`)
+  if (!res.ok) throw new Error(`GET_BOARD failed: ${meta.status} ${safeJson(data)}`)
   return data
 }
 
@@ -941,11 +1029,35 @@ async function run() {
     const p = worldPixelFromEvent(e)
     if (!p) return
 
+    const user = await getUserForPayload(inDiscord)
+    const picked = palette[state.selectedColor]
+    const colorInt = hexToIntColor(picked)
+    console.groupCollapsed(`[ui_click_place] ${p.x},${p.y}`)
+    console.log("time", nowIso())
+    console.log("inDiscord", inDiscord)
+    console.log("sessionState", sessionState)
+    console.log("selectedColorId", state.selectedColor)
+    console.log("selectedColorHex", picked)
+    console.log("selectedColorInt", colorInt >>> 0)
+    console.log("user", user)
+    console.log("board", { w: board.w, h: board.h, chunkSize, colors: board.colors, cooldownMs: board.cooldownMs })
+    console.log("view", { ...view })
+    console.log("hover", state.hover)
+    console.groupEnd()
+
     try {
-      const rr = await placePixelBackend(inDiscord, p.x, p.y, palette[state.selectedColor])
+      const rr = await placePixelBackend(inDiscord, p.x, p.y, picked)
+      console.groupCollapsed(`[place_pixel_result] ${p.x},${p.y}`)
+      console.log("time", nowIso())
+      console.log("result", rr)
+      console.groupEnd()
       if (rr?.ok) logLine(`🟦 Placed pixel @ ${p.x},${p.y} color=${state.selectedColor}`)
       setColorAt(p.x, p.y, state.selectedColor)
     } catch (err) {
+      console.groupCollapsed(`[place_pixel_error] ${p.x},${p.y}`)
+      console.log("time", nowIso())
+      console.error(err)
+      console.groupEnd()
       logLine(String(err?.message || err))
     }
 
@@ -967,6 +1079,11 @@ async function run() {
       b.disabled = sessionState === "PAUSED"
       b.onclick = () => {
         if (sessionState === "PAUSED") return
+        console.groupCollapsed(`[palette_select] ${i}`)
+        console.log("time", nowIso())
+        console.log("prev", state.selectedColor)
+        console.log("next", i)
+        console.groupEnd()
         state.selectedColor = i
         buildPalette()
         render()
@@ -987,6 +1104,11 @@ async function run() {
   let polling = false
 
   async function applyUpdateChunks(chunks) {
+    console.groupCollapsed(`[apply_update_chunks] n=${chunks?.length ?? 0}`)
+    console.log("time", nowIso())
+    console.log("chunkSize", chunkSize)
+    console.groupEnd()
+
     for (const c of chunks) {
       if (c?.dataGzipB64) {
         const bytes = await gunzipBytes(b64ToBytes(c.dataGzipB64))
@@ -1002,9 +1124,23 @@ async function run() {
 
   async function fullReloadFromServerless() {
     logLine("⏳ Reloading board from serverless...")
+    console.groupCollapsed("[full_reload_from_serverless] start")
+    console.log("time", nowIso())
+    console.log("lastSince_before", lastSince)
+    console.log("board_before", { w: board.w, h: board.h, chunkSize, colors: board.colors, cooldownMs: board.cooldownMs })
+    console.groupEnd()
+
     clearBoardLocal()
     lastSince = new Date(0).toISOString()
     const r2 = await loadBoardFromServerlessFull()
+
+    console.groupCollapsed("[full_reload_from_serverless] done")
+    console.log("time", nowIso())
+    console.log("result", r2)
+    console.log("board_after", { w: board.w, h: board.h, chunkSize, colors: board.colors, cooldownMs: board.cooldownMs })
+    console.log("lastSince_after", lastSince)
+    console.groupEnd()
+
     logLine(`✅ Board reloaded (chunks=${r2.chunksApplied}${r2.metaApplied ? ", meta" : ""}).`)
     $("fit").click()
     render()
@@ -1013,13 +1149,40 @@ async function run() {
 
   async function quickGetBoardOnce() {
     logLine("⏳ Fetching latest chunks...")
+
+    const started = msNow()
+    const since0 = lastSince
+    console.groupCollapsed("[quick_get_board_once] start")
+    console.log("time", nowIso())
+    console.log("since", since0)
+    console.log("limit", 500)
+    console.log("chunkSize", chunkSize)
+    console.groupEnd()
+
     let pageToken = null
     let maxUpdatedAt = lastSince
     let changed = false
+    let pages = 0
+    let totalChunks = 0
 
     do {
+      pages++
       const data = await getBoardBackend(inDiscord, lastSince, 500, pageToken, {})
       const chunks = Array.isArray(data?.chunks) ? data.chunks : []
+      totalChunks += chunks.length
+
+      console.groupCollapsed(`[quick_get_board_once] page ${pages}`)
+      console.log("time", nowIso())
+      console.log("since_used", lastSince)
+      console.log("returned", data?.returned ?? chunks.length)
+      console.log("chunks_len", chunks.length)
+      console.log("nextPageToken", data?.nextPageToken || null)
+      if (chunks.length) {
+        console.log("first_chunk", chunks[0])
+        console.log("last_chunk", chunks[chunks.length - 1])
+      }
+      console.groupEnd()
+
       if (chunks.length) {
         await applyUpdateChunks(chunks)
         changed = true
@@ -1031,6 +1194,17 @@ async function run() {
     } while (pageToken)
 
     lastSince = maxUpdatedAt
+
+    const ms = Math.round(msNow() - started)
+    console.groupCollapsed("[quick_get_board_once] done")
+    console.log("time", nowIso())
+    console.log("ms", ms)
+    console.log("pages", pages)
+    console.log("totalChunks", totalChunks)
+    console.log("changed", changed)
+    console.log("lastSince_after", lastSince)
+    console.groupEnd()
+
     if (changed) {
       logLine("✅ Updated.")
       render()
@@ -1050,6 +1224,10 @@ async function run() {
     try {
       await quickGetBoardOnce()
     } catch (e) {
+      console.groupCollapsed("[reload_button_error]")
+      console.log("time", nowIso())
+      console.error(e)
+      console.groupEnd()
       logLine(String(e?.message || e))
     } finally {
       if (b) {
@@ -1090,6 +1268,10 @@ async function run() {
         await snapshotBackend(inDiscord, null)
         logLine("✅ Snapshot requested.")
       } catch (e) {
+        console.groupCollapsed("[snapshot_error]")
+        console.log("time", nowIso())
+        console.error(e)
+        console.groupEnd()
         logLine(String(e?.message || e))
       } finally {
         snapBtn.disabled = false
@@ -1101,6 +1283,10 @@ async function run() {
   $("clear").onclick = () => {
     clearBoardLocal()
     logLine("🧹 Cleared locally.")
+    console.groupCollapsed("[clear_local]")
+    console.log("time", nowIso())
+    console.log("board", { w: board.w, h: board.h, pixels: board.pixels?.length, metaHash: board.metaHash?.length, metaTs: board.metaTs?.length })
+    console.groupEnd()
     render()
     resolveHoverOwner(state.hover)
   }
@@ -1117,6 +1303,10 @@ async function run() {
         await fullReloadFromServerless()
         logLine("✅ Board reset.")
       } catch (e) {
+        console.groupCollapsed("[reset_board_error]")
+        console.log("time", nowIso())
+        console.error(e)
+        console.groupEnd()
         logLine(String(e?.message || e))
       } finally {
         resetSessionBtn.disabled = false
@@ -1135,8 +1325,16 @@ async function run() {
         logLine("⏳ Session start...")
         const data = await sessionStartBackend(inDiscord)
         setSessionState("RUNNING")
+        console.groupCollapsed("[session_start_result]")
+        console.log("time", nowIso())
+        console.log("result", data)
+        console.groupEnd()
         logLine(`✅ Session started.${data?.ok === false ? " (server returned ok=false)" : ""}`)
       } catch (e) {
+        console.groupCollapsed("[session_start_error]")
+        console.log("time", nowIso())
+        console.error(e)
+        console.groupEnd()
         logLine(String(e?.message || e))
       } finally {
         startBtn.disabled = false
@@ -1155,8 +1353,16 @@ async function run() {
         logLine("⏳ Session pause...")
         const data = await sessionPauseBackend(inDiscord)
         setSessionState("PAUSED")
+        console.groupCollapsed("[session_pause_result]")
+        console.log("time", nowIso())
+        console.log("result", data)
+        console.groupEnd()
         logLine(`✅ Session paused.${data?.ok === false ? " (server returned ok=false)" : ""}`)
       } catch (e) {
+        console.groupCollapsed("[session_pause_error]")
+        console.log("time", nowIso())
+        console.error(e)
+        console.groupEnd()
         logLine(String(e?.message || e))
       } finally {
         pauseBtn.disabled = false
@@ -1191,8 +1397,18 @@ async function run() {
   ;(async () => {
     try {
       logLine("⏳ Loading board from serverless...")
+      console.groupCollapsed("[startup_load_board] start")
+      console.log("time", nowIso())
+      console.groupEnd()
       await fullReloadFromServerless()
+      console.groupCollapsed("[startup_load_board] done")
+      console.log("time", nowIso())
+      console.groupEnd()
     } catch (e) {
+      console.groupCollapsed("[startup_load_board_error]")
+      console.log("time", nowIso())
+      console.error(e)
+      console.groupEnd()
       logLine(String(e?.message || "⚠️ serverless /board unreachable"))
       $("fit").click()
       render()
@@ -1208,10 +1424,17 @@ async function run() {
         let pageToken = null
         let maxUpdatedAt = lastSince
         let changed = false
+        let pages = 0
+        let chunksTotal = 0
+
+        const started = msNow()
 
         do {
+          pages++
           const data = await getBoardBackend(inDiscord, lastSince, 200, pageToken, {})
           const chunks = Array.isArray(data?.chunks) ? data.chunks : []
+          chunksTotal += chunks.length
+
           if (chunks.length) {
             await applyUpdateChunks(chunks)
             changed = true
@@ -1223,12 +1446,24 @@ async function run() {
         } while (pageToken)
 
         lastSince = maxUpdatedAt
+
         if (changed) {
+          const ms = Math.round(msNow() - started)
+          console.groupCollapsed("[poll_board_changed]")
+          console.log("time", nowIso())
+          console.log("ms", ms)
+          console.log("pages", pages)
+          console.log("chunksTotal", chunksTotal)
+          console.log("lastSince", lastSince)
+          console.groupEnd()
           render()
           resolveHoverOwner(state.hover)
         }
       } catch (e) {
+        console.groupCollapsed("[poll_board_error]")
+        console.log("time", nowIso())
         console.error(e)
+        console.groupEnd()
       }
       await new Promise((r3) => setTimeout(r3, 1000))
     }
