@@ -1,7 +1,7 @@
 import "./style.css"
 import { DiscordSDK } from "@discord/embedded-app-sdk"
 
-console.log("MAIN.JS VERSION = BOARD_V3_GUIDE_OAUTH_VIA_API_TOKEN_NO_GUILDS", new Date().toISOString())
+console.log("MAIN.JS VERSION = BOARD_V3_GUIDE_OAUTH_VIA_API_TOKEN", new Date().toISOString())
 
 const GATEWAY_BASE = "https://1224715390362324992.discordsays.com/gcp"
 
@@ -145,7 +145,7 @@ async function loginDiscordActivity() {
     response_type: "code",
     state: "",
     prompt: "none",
-    scope: ["identify"]
+    scope: ["identify", "guilds", "applications.commands"]
   })
 
   const access_token = await exchangeCodeForTokenViaApi(code)
@@ -160,9 +160,14 @@ async function loginDiscordActivity() {
     avatar_url: auth.user.avatar ? `https://cdn.discordapp.com/avatars/${auth.user.id}/${auth.user.avatar}.png?size=128` : ""
   }
 
+  const guildId = discordSdk.guildId ? String(discordSdk.guildId) : ""
+  const channelId = discordSdk.channelId ? String(discordSdk.channelId) : ""
+
   setActivityUser(u)
   setActivityAuth({
     accessToken: access_token,
+    guildId,
+    channelId,
     clientId,
     at: new Date().toISOString()
   })
@@ -175,6 +180,20 @@ async function getUserForPayload(inDiscord) {
   const u = getActivityUser()
   if (!u?.id) return null
   return { id: u.id, username: u.username || "", avatar: u.avatar || "" }
+}
+
+async function getUserIdForAction(inDiscord) {
+  if (!inDiscord) return null
+  const u = getActivityUser()
+  return u?.id ? String(u.id) : null
+}
+
+async function requireAdminAuthForWorker(inDiscord) {
+  if (!inDiscord) return { accessToken: null, guildId: null }
+  const a = getActivityAuth()
+  if (!a?.accessToken) throw new Error("missing_activity_access_token")
+  if (!a?.guildId) throw new Error("missing_guild_id")
+  return { accessToken: String(a.accessToken), guildId: String(a.guildId) }
 }
 
 async function pingBackend(inDiscord) {
@@ -204,10 +223,8 @@ async function pingBackend(inDiscord) {
 
 async function sessionStartBackend(inDiscord) {
   const reqId = makeReqId()
-  const a = getActivityAuth()
-  const user = getActivityUser()
-  if (!a?.accessToken) throw new Error("missing_activity_access_token")
-  if (!user?.id) throw new Error("missing_user")
+  const userId = await getUserIdForAction(inDiscord)
+  const admin = await requireAdminAuthForWorker(inDiscord)
 
   const res = await fetch(`${GATEWAY_BASE}/proxy`, {
     method: "POST",
@@ -218,9 +235,9 @@ async function sessionStartBackend(inDiscord) {
         from: "activity",
         at: new Date().toISOString(),
         reqId,
-        userId: String(user.id),
-        accessToken: String(a.accessToken),
-        guildId: null
+        userId: userId || null,
+        accessToken: admin.accessToken,
+        guildId: admin.guildId
       }
     })
   })
@@ -234,10 +251,8 @@ async function sessionStartBackend(inDiscord) {
 
 async function sessionPauseBackend(inDiscord) {
   const reqId = makeReqId()
-  const a = getActivityAuth()
-  const user = getActivityUser()
-  if (!a?.accessToken) throw new Error("missing_activity_access_token")
-  if (!user?.id) throw new Error("missing_user")
+  const userId = await getUserIdForAction(inDiscord)
+  const admin = await requireAdminAuthForWorker(inDiscord)
 
   const res = await fetch(`${GATEWAY_BASE}/proxy`, {
     method: "POST",
@@ -248,9 +263,9 @@ async function sessionPauseBackend(inDiscord) {
         from: "activity",
         at: new Date().toISOString(),
         reqId,
-        userId: String(user.id),
-        accessToken: String(a.accessToken),
-        guildId: null
+        userId: userId || null,
+        accessToken: admin.accessToken,
+        guildId: admin.guildId
       }
     })
   })
@@ -264,63 +279,95 @@ async function sessionPauseBackend(inDiscord) {
 
 async function resetBoardBackend(inDiscord) {
   const reqId = makeReqId()
-  const a = getActivityAuth()
-  const user = getActivityUser()
-  if (!a?.accessToken) throw new Error("missing_activity_access_token")
-  if (!user?.id) throw new Error("missing_user")
+  const userId = await getUserIdForAction(inDiscord)
+  const admin = await requireAdminAuthForWorker(inDiscord)
+
+  const payload = {
+    type: "RESET_BOARD",
+    payload: {
+      from: "activity",
+      at: new Date().toISOString(),
+      reqId,
+      userId,
+      accessToken: admin.accessToken,
+      guildId: admin.guildId
+    }
+  }
+
+  console.log(JSON.stringify({ t: new Date().toISOString(), event: "reset:request", url: `${GATEWAY_BASE}/proxy`, payload }))
+  const t0 = performance.now()
 
   const res = await fetch(`${GATEWAY_BASE}/proxy`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      type: "RESET_BOARD",
-      payload: {
-        from: "activity",
-        at: new Date().toISOString(),
-        reqId,
-        userId: String(user.id),
-        accessToken: String(a.accessToken),
-        guildId: null
-      }
-    })
+    body: JSON.stringify(payload)
   })
 
   const text = await res.text().catch(() => "")
   let data = null
   try { data = text ? JSON.parse(text) : null } catch { data = { raw: text } }
+
+  const ms = Math.round(performance.now() - t0)
+  console.log(JSON.stringify({
+    t: new Date().toISOString(),
+    event: "reset:response",
+    status: res.status,
+    ok: res.ok,
+    ms,
+    reqId,
+    userId: userId || null,
+    data
+  }))
+
   if (!res.ok) throw new Error(`RESET_BOARD failed: ${res.status} ${JSON.stringify(data)}`)
-  return data
+  return { data, _client: { reqId, userId, ms } }
 }
 
-async function snapshotBackend(inDiscord) {
+async function snapshotBackend(inDiscord, region = null) {
   const reqId = makeReqId()
-  const a = getActivityAuth()
-  const user = getActivityUser()
-  if (!a?.accessToken) throw new Error("missing_activity_access_token")
-  if (!user?.id) throw new Error("missing_user")
+  const userId = await getUserIdForAction(inDiscord)
+  const admin = await requireAdminAuthForWorker(inDiscord)
+
+  const payload = {
+    type: "SNAPSHOT_CREATE",
+    payload: {
+      from: "activity",
+      at: new Date().toISOString(),
+      reqId,
+      userId,
+      region: region || null,
+      accessToken: admin.accessToken,
+      guildId: admin.guildId
+    }
+  }
+
+  console.log(JSON.stringify({ t: new Date().toISOString(), event: "snapshot:request", url: `${GATEWAY_BASE}/proxy`, payload }))
+  const t0 = performance.now()
 
   const res = await fetch(`${GATEWAY_BASE}/proxy`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      type: "SNAPSHOT_CREATE",
-      payload: {
-        from: "activity",
-        at: new Date().toISOString(),
-        reqId,
-        userId: String(user.id),
-        accessToken: String(a.accessToken),
-        guildId: null,
-        region: null
-      }
-    })
+    body: JSON.stringify(payload)
   })
 
   const text = await res.text().catch(() => "")
   let data = null
   try { data = text ? JSON.parse(text) : null } catch { data = { raw: text } }
+
+  const ms = Math.round(performance.now() - t0)
+  console.log(JSON.stringify({
+    t: new Date().toISOString(),
+    event: "snapshot:response",
+    status: res.status,
+    ok: res.ok,
+    ms,
+    reqId,
+    userId: userId || null,
+    data
+  }))
+
   if (!res.ok) throw new Error(`SNAPSHOT_CREATE failed: ${res.status} ${JSON.stringify(data)}`)
-  return data
+  return { data, _client: { reqId, userId, ms } }
 }
 
 async function placePixelBackend(inDiscord, x, y, colorHexOrInt) {
@@ -338,7 +385,7 @@ async function placePixelBackend(inDiscord, x, y, colorHexOrInt) {
         at: new Date().toISOString(),
         reqId,
         userId: user?.id,
-        username: user?.username ?? null,
+        username: user?.username ?? user?.global_name ?? user?.displayName ?? null,
         x,
         y,
         color
@@ -349,6 +396,7 @@ async function placePixelBackend(inDiscord, x, y, colorHexOrInt) {
   const text = await res.text().catch(() => "")
   let data = null
   try { data = text ? JSON.parse(text) : null } catch { data = { raw: text } }
+
   if (!res.ok) throw new Error(`PLACE_PIXEL failed: ${res.status} ${JSON.stringify(data)}`)
   return data
 }
@@ -618,14 +666,14 @@ async function run() {
 
   let chunkSize = 10
 
+  const canvas = $("cv")
+  const ctx = canvas.getContext("2d", { alpha: false })
+
   function clamp(v, a, b) { return Math.max(a, Math.min(b, v)) }
 
   function worldToScreen(x, y) {
     return { x: x * view.zoom + view.panX, y: y * view.zoom + view.panY }
   }
-
-  const canvas = $("cv")
-  const ctx = canvas.getContext("2d", { alpha: false })
 
   function screenToWorld(clientX, clientY) {
     const r2 = canvas.getBoundingClientRect()
@@ -642,10 +690,6 @@ async function run() {
     const y = Math.floor(w.y)
     if (x < 0 || y < 0 || x >= board.w || y >= board.h) return null
     return { x, y }
-  }
-
-  function idx(x, y) {
-    return y * board.w + x
   }
 
   function updateHUD() {
@@ -667,6 +711,10 @@ async function run() {
     const g3 = parseInt(h.slice(2, 4), 16)
     const b3 = parseInt(h.slice(4, 6), 16)
     return `rgba(${r3},${g3},${b3},${a})`
+  }
+
+  function idx(x, y) {
+    return y * board.w + x
   }
 
   function getColorAt(x, y) {
@@ -816,6 +864,9 @@ async function run() {
     }
 
     const m = getMetaAt(p.x, p.y)
+    state.hoverHash = m.userHash >>> 0
+    state.hoverTs = m.ts >>> 0
+
     if (!m.userHash) {
       setHoverUserText("-", "-")
       return
@@ -833,10 +884,26 @@ async function run() {
       const data = await resolveUserHashBackend(m.userHash)
       if (token !== hoverResolveToken) return
 
-      const discordId = data?.discordId || data?.userId || data?.id || data?.user?.id || ""
-      const username = data?.discordUsername || data?.username || data?.user?.username || data?.user?.global_name || data?.user?.name || ""
+      const discordId =
+        data?.discordId ||
+        data?.userId ||
+        data?.id ||
+        data?.user?.id ||
+        ""
 
-      const norm = { discordId: discordId ? String(discordId) : "", username: username ? String(username) : "" }
+      const username =
+        data?.discordUsername ||
+        data?.username ||
+        data?.user?.username ||
+        data?.user?.global_name ||
+        data?.user?.name ||
+        ""
+
+      const norm = {
+        discordId: discordId ? String(discordId) : "",
+        username: username ? String(username) : ""
+      }
+
       userHashCache.set(m.userHash, norm)
       setHoverUserText(norm.username || "-", norm.discordId || "-")
     } catch {
@@ -984,11 +1051,13 @@ async function run() {
     }
 
     try {
+      console.log(JSON.stringify({ t: new Date().toISOString(), event: "reset:ui_click", inDiscord }))
       logLine("⏳ Resetting board (deleting ALL chunks)...")
       await resetBoardBackend(inDiscord)
       await reloadBoardFromServerless()
       logLine("✅ Board reset.")
     } catch (e) {
+      console.log(JSON.stringify({ t: new Date().toISOString(), event: "reset:error", msg: String(e?.message || e), err: String(e?.stack || e) }))
       logLine(String(e?.message || e))
     } finally {
       if (b) {
@@ -1006,10 +1075,12 @@ async function run() {
       snapBtn.textContent = "Snapshotting..."
 
       try {
+        console.log(JSON.stringify({ t: new Date().toISOString(), event: "snapshot:ui_click", inDiscord }))
         logLine("⏳ Creating snapshot...")
-        await snapshotBackend(inDiscord)
+        await snapshotBackend(inDiscord, null)
         logLine("✅ Snapshot requested.")
       } catch (e) {
+        console.log(JSON.stringify({ t: new Date().toISOString(), event: "snapshot:error", msg: String(e?.message || e), err: String(e?.stack || e) }))
         logLine(String(e?.message || e))
       } finally {
         snapBtn.disabled = false
@@ -1032,11 +1103,13 @@ async function run() {
       resetSessionBtn.disabled = true
       resetSessionBtn.textContent = "Resetting..."
       try {
+        console.log(JSON.stringify({ t: new Date().toISOString(), event: "resetSession:ui_click", inDiscord }))
         logLine("⏳ Resetting board (deleting ALL chunks)...")
         await resetBoardBackend(inDiscord)
         await reloadBoardFromServerless()
         logLine("✅ Board reset.")
       } catch (e) {
+        console.log(JSON.stringify({ t: new Date().toISOString(), event: "resetSession:error", msg: String(e?.message || e), err: String(e?.stack || e) }))
         logLine(String(e?.message || e))
       } finally {
         resetSessionBtn.disabled = false
@@ -1052,6 +1125,7 @@ async function run() {
       startBtn.disabled = true
       startBtn.textContent = "Starting..."
       try {
+        console.log(JSON.stringify({ t: new Date().toISOString(), event: "session:start:ui_click", inDiscord }))
         logLine("⏳ Session start...")
         const data = await sessionStartBackend(inDiscord)
         logLine(`✅ Session started.${data?.ok === false ? " (server returned ok=false)" : ""}`)
@@ -1071,6 +1145,7 @@ async function run() {
       pauseBtn.disabled = true
       pauseBtn.textContent = "Pausing..."
       try {
+        console.log(JSON.stringify({ t: new Date().toISOString(), event: "session:pause:ui_click", inDiscord }))
         logLine("⏳ Session pause...")
         const data = await sessionPauseBackend(inDiscord)
         logLine(`✅ Session paused.${data?.ok === false ? " (server returned ok=false)" : ""}`)
@@ -1095,6 +1170,7 @@ async function run() {
         const data = await pingBackend(inDiscord)
         pingOut.textContent = JSON.stringify(data, null, 2)
       } catch (err) {
+        console.error(err)
         pingOut.textContent = `Erreur: ${err?.message ?? String(err)}`
       } finally {
         pingBtn.disabled = false
@@ -1144,7 +1220,9 @@ async function run() {
           render()
           resolveHoverOwner(state.hover)
         }
-      } catch { }
+      } catch (e) {
+        console.error(e)
+      }
       await new Promise((r3) => setTimeout(r3, 1000))
     }
   }
