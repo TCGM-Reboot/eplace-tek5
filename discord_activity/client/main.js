@@ -1,7 +1,7 @@
 import "./style.css"
 import { DiscordSDK } from "@discord/embedded-app-sdk"
 
-console.log("MAIN.JS VERSION = BOARD_V3_GUIDE_OAUTH_VIA_API_TOKEN", new Date().toISOString())
+console.log("MAIN.JS VERSION = BOARD_V3_NO_SERVER_SELECT_IDENTIFY_ONLY", new Date().toISOString())
 
 const GATEWAY_BASE = "https://1224715390362324992.discordsays.com/gcp"
 
@@ -146,7 +146,7 @@ async function loginDiscordActivity() {
     response_type: "code",
     state: "",
     prompt: "none",
-    scope: ["identify", "guilds", "applications.commands"]
+    scope: ["identify"]
   })
 
   const access_token = await exchangeCodeForTokenViaApi(code)
@@ -189,12 +189,12 @@ async function getUserIdForAction(inDiscord) {
   return u?.id ? String(u.id) : null
 }
 
-async function requireAdminAuthForWorker(inDiscord) {
+async function requireAuthForWorker(inDiscord) {
   if (!inDiscord) return { accessToken: null, guildId: null }
   const a = getActivityAuth()
   if (!a?.accessToken) throw new Error("missing_activity_access_token")
-  if (!a?.guildId) throw new Error("missing_guild_id")
-  return { accessToken: String(a.accessToken), guildId: String(a.guildId) }
+  const guildId = a?.guildId ? String(a.guildId) : ""
+  return { accessToken: String(a.accessToken), guildId: guildId || null }
 }
 
 async function pingBackend(inDiscord) {
@@ -225,7 +225,7 @@ async function pingBackend(inDiscord) {
 async function sessionStartBackend(inDiscord) {
   const reqId = makeReqId()
   const userId = await getUserIdForAction(inDiscord)
-  const admin = await requireAdminAuthForWorker(inDiscord)
+  const auth = await requireAuthForWorker(inDiscord)
 
   const res = await fetch(`${GATEWAY_BASE}/proxy`, {
     method: "POST",
@@ -237,8 +237,8 @@ async function sessionStartBackend(inDiscord) {
         at: new Date().toISOString(),
         reqId,
         userId: userId || null,
-        accessToken: admin.accessToken,
-        guildId: admin.guildId
+        accessToken: auth.accessToken,
+        guildId: auth.guildId
       }
     })
   })
@@ -253,7 +253,7 @@ async function sessionStartBackend(inDiscord) {
 async function sessionPauseBackend(inDiscord) {
   const reqId = makeReqId()
   const userId = await getUserIdForAction(inDiscord)
-  const admin = await requireAdminAuthForWorker(inDiscord)
+  const auth = await requireAuthForWorker(inDiscord)
 
   const res = await fetch(`${GATEWAY_BASE}/proxy`, {
     method: "POST",
@@ -265,8 +265,8 @@ async function sessionPauseBackend(inDiscord) {
         at: new Date().toISOString(),
         reqId,
         userId: userId || null,
-        accessToken: admin.accessToken,
-        guildId: admin.guildId
+        accessToken: auth.accessToken,
+        guildId: auth.guildId
       }
     })
   })
@@ -281,7 +281,7 @@ async function sessionPauseBackend(inDiscord) {
 async function resetBoardBackend(inDiscord) {
   const reqId = makeReqId()
   const userId = await getUserIdForAction(inDiscord)
-  const admin = await requireAdminAuthForWorker(inDiscord)
+  const auth = await requireAuthForWorker(inDiscord)
 
   const payload = {
     type: "RESET_BOARD",
@@ -290,8 +290,8 @@ async function resetBoardBackend(inDiscord) {
       at: new Date().toISOString(),
       reqId,
       userId,
-      accessToken: admin.accessToken,
-      guildId: admin.guildId
+      accessToken: auth.accessToken,
+      guildId: auth.guildId
     }
   }
 
@@ -327,7 +327,7 @@ async function resetBoardBackend(inDiscord) {
 async function snapshotBackend(inDiscord, region = null) {
   const reqId = makeReqId()
   const userId = await getUserIdForAction(inDiscord)
-  const admin = await requireAdminAuthForWorker(inDiscord)
+  const auth = await requireAuthForWorker(inDiscord)
 
   const payload = {
     type: "SNAPSHOT_CREATE",
@@ -337,8 +337,8 @@ async function snapshotBackend(inDiscord, region = null) {
       reqId,
       userId,
       region: region || null,
-      accessToken: admin.accessToken,
-      guildId: admin.guildId
+      accessToken: auth.accessToken,
+      guildId: auth.guildId
     }
   }
 
@@ -561,7 +561,7 @@ async function run() {
 
       <div class="mainRow">
         <div class="leftPanel">
-          <h3 style="margin:0;">r/place viewer (server)</h3>
+          <h3 style="margin:0;">r/place viewer</h3>
 
           <div class="mini">
             <div>Board: <span id="boardSize"></span></div>
@@ -1182,7 +1182,7 @@ async function run() {
 
   buildPalette()
 
-  ; (async () => {
+  ;(async () => {
     try {
       logLine("⏳ Loading board from serverless...")
       await reloadBoardFromServerless()
