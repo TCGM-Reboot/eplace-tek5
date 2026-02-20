@@ -225,7 +225,6 @@ async function pingBackend(inDiscord) {
 async function sessionStartBackend(inDiscord) {
   const reqId = makeReqId()
   const userId = await getUserIdForAction(inDiscord)
-  const auth = await requireAuthForWorker(inDiscord)
 
   const res = await fetch(`${GATEWAY_BASE}/proxy`, {
     method: "POST",
@@ -237,8 +236,6 @@ async function sessionStartBackend(inDiscord) {
         at: new Date().toISOString(),
         reqId,
         userId: userId || null,
-        accessToken: auth.accessToken,
-        guildId: auth.guildId
       }
     })
   })
@@ -253,7 +250,6 @@ async function sessionStartBackend(inDiscord) {
 async function sessionPauseBackend(inDiscord) {
   const reqId = makeReqId()
   const userId = await getUserIdForAction(inDiscord)
-  const auth = await requireAuthForWorker(inDiscord)
 
   const res = await fetch(`${GATEWAY_BASE}/proxy`, {
     method: "POST",
@@ -265,8 +261,6 @@ async function sessionPauseBackend(inDiscord) {
         at: new Date().toISOString(),
         reqId,
         userId: userId || null,
-        accessToken: auth.accessToken,
-        guildId: auth.guildId
       }
     })
   })
@@ -281,7 +275,6 @@ async function sessionPauseBackend(inDiscord) {
 async function resetBoardBackend(inDiscord) {
   const reqId = makeReqId()
   const userId = await getUserIdForAction(inDiscord)
-  const auth = await requireAuthForWorker(inDiscord)
 
   const payload = {
     type: "RESET_BOARD",
@@ -290,8 +283,6 @@ async function resetBoardBackend(inDiscord) {
       at: new Date().toISOString(),
       reqId,
       userId,
-      accessToken: auth.accessToken,
-      guildId: auth.guildId
     }
   }
 
@@ -312,7 +303,6 @@ async function resetBoardBackend(inDiscord) {
 async function snapshotBackend(inDiscord, region = null) {
   const reqId = makeReqId()
   const userId = await getUserIdForAction(inDiscord)
-  const auth = await requireAuthForWorker(inDiscord)
 
   const payload = {
     type: "SNAPSHOT_CREATE",
@@ -322,8 +312,6 @@ async function snapshotBackend(inDiscord, region = null) {
       reqId,
       userId,
       region: region || null,
-      accessToken: auth.accessToken,
-      guildId: auth.guildId
     }
   }
 
