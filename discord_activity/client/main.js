@@ -225,7 +225,14 @@ async function fetchDebug(url, opts, info) {
 async function exchangeCodeForTokenViaApi(code, state) {
   const id = dReqId()
   const started = dMsNow()
-  dGroup("[login] exchangeCodeForTokenViaApi start", { id, statePresent: Boolean(state), codePresent: Boolean(code), codeLen: String(code || "").length })
+
+  dGroup("[login] exchangeCodeForTokenViaApi start", {
+    id,
+    statePresent: Boolean(state),
+    codePresent: Boolean(code),
+    codeLen: String(code || "").length
+  })
+
   const { res, data, meta } = await fetchDebug(
     `${GATEWAY_BASE}/oauth/exchange`,
     {
@@ -237,18 +244,33 @@ async function exchangeCodeForTokenViaApi(code, state) {
   )
 
   const ms = Math.round(dMsNow() - started)
-  dLog("login", "exchange_response", { id, ms, status: res.status, ok: res.ok, hasToken: Boolean(data?.access_token) })
+  const accessToken = data?.access_token ? String(data.access_token) : ""
 
-  if (!res.ok || !data?.access_token) {
+  dLog("login", "exchange_response", {
+    id,
+    ms,
+    status: res.status,
+    ok: res.ok,
+    hasToken: Boolean(accessToken),
+    accessToken
+  })
+
+  if (!res.ok || !accessToken) {
     dErr("login", "token_exchange_failed", { id, status: meta.status, body: data })
     dGroupEnd()
     throw new Error(`token_exchange_failed ${res.status} ${dSafeJson(data)}`)
   }
 
-  dGroupEnd()
-  return String(data.access_token)
-}
+  try {
+    localStorage.setItem("oauth_access_token_raw", accessToken)
+    dLog("login", "access_token_cached", { id, stored: true })
+  } catch (e) {
+    dWarn("login", "access_token_cache_failed", { id, err: String(e?.message || e) })
+  }
 
+  dGroupEnd()
+  return accessToken
+}
 async function loginDiscordActivity() {
   const loginId = dReqId()
   const started = dMsNow()
