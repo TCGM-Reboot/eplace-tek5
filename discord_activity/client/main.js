@@ -790,10 +790,6 @@ async function run() {
     return board.pixels[idx(x, y)] ?? 1
   }
 
-  function setColorAt(x, y, colorId) {
-    board.pixels[idx(x, y)] = colorId
-  }
-
   function getMetaAt(x, y) {
     const i = idx(x, y)
     return { userHash: board.metaHash[i] >>> 0, ts: board.metaTs[i] >>> 0 }
@@ -834,7 +830,8 @@ async function run() {
       const dstRow = (oy + y) * maxW + ox
       for (let x = 0; x < w; x++) {
         const v = bytes[srcRow + x]
-        board.pixels[dstRow + x] = (v === undefined ? 1 : v)
+        const c = (v === undefined ? 1 : v)
+        board.pixels[dstRow + x] = c
       }
     }
   }
@@ -1019,15 +1016,142 @@ async function run() {
     state.dragStart = null
   })
 
+  let lastSince = new Date(0).toISOString()
+  let polling = false
+  let placing = false
+
+  async function applyUpdateChunks(chunks) {
+    console.groupCollapsed(`[apply_update_chunks] n=${chunks?.length ?? 0}`)
+    console.log("time", nowIso())
+    console.log("chunkSize", chunkSize)
+    console.groupEnd()
+
+    for (const c of chunks) {
+      if (c?.dataGzipB64) {
+        const bytes = await gunzipBytes(b64ToBytes(c.dataGzipB64))
+        let sz = chunkSize
+        if (!sz || sz <= 0) {
+          const g = guessSquareSize(bytes.length)
+          if (g) sz = g
+        }
+        if (sz && sz > 0) applyChunk(Number(c.cx || 0), Number(c.cy || 0), bytes, sz)
+      }
+    }
+  }
+
+  async function quickGetBoardOnce(reason = "manual") {
+    const started = msNow()
+    const since0 = lastSince
+    logLine("⏳ Fetching latest chunks...")
+
+    console.groupCollapsed("[quick_get_board_once] start")
+    console.log("time", nowIso())
+    console.log("reason", reason)
+    console.log("since", since0)
+    console.log("limit", 500)
+    console.log("chunkSize", chunkSize)
+    console.groupEnd()
+
+    let pageToken = null
+    let maxUpdatedAt = lastSince
+    let changed = false
+    let pages = 0
+    let totalChunks = 0
+
+    do {
+      pages++
+      const data = await getBoardBackend(inDiscord, lastSince, 500, pageToken, {})
+      const chunks = Array.isArray(data?.chunks) ? data.chunks : []
+      totalChunks += chunks.length
+
+      console.groupCollapsed(`[quick_get_board_once] page ${pages}`)
+      console.log("time", nowIso())
+      console.log("since_used", lastSince)
+      console.log("sinceEcho", data?.sinceEcho ?? null)
+      console.log("returned", data?.returned ?? chunks.length)
+      console.log("chunks_len", chunks.length)
+      console.log("nextPageToken", data?.nextPageToken || null)
+      if (chunks.length) {
+        console.log("first_chunk", chunks[0])
+        console.log("last_chunk", chunks[chunks.length - 1])
+      }
+      console.groupEnd()
+
+      if (chunks.length) {
+        await applyUpdateChunks(chunks)
+        changed = true
+      }
+      for (const c of chunks) {
+        if (c?.updatedAt && String(c.updatedAt) > String(maxUpdatedAt)) maxUpdatedAt = String(c.updatedAt)
+      }
+      pageToken = data?.nextPageToken || null
+    } while (pageToken)
+
+    lastSince = maxUpdatedAt
+
+    const ms = Math.round(msNow() - started)
+    console.groupCollapsed("[quick_get_board_once] done")
+    console.log("time", nowIso())
+    console.log("ms", ms)
+    console.log("pages", pages)
+    console.log("totalChunks", totalChunks)
+    console.log("changed", changed)
+    console.log("lastSince_after", lastSince)
+    console.groupEnd()
+
+    if (changed) {
+      logLine("✅ Updated.")
+      render()
+      resolveHoverOwner(state.hover)
+    } else {
+      logLine("✅ No changes.")
+    }
+
+    return { changed, totalChunks, pages, ms }
+  }
+
+  async function fullReloadFromServerless() {
+    logLine("⏳ Reloading board from serverless...")
+    console.groupCollapsed("[full_reload_from_serverless] start")
+    console.log("time", nowIso())
+    console.log("lastSince_before", lastSince)
+    console.log("board_before", { w: board.w, h: board.h, chunkSize, colors: board.colors, cooldownMs: board.cooldownMs })
+    console.groupEnd()
+
+    clearBoardLocal()
+    lastSince = new Date(0).toISOString()
+    const r2 = await loadBoardFromServerlessFull()
+
+    console.groupCollapsed("[full_reload_from_serverless] done")
+    console.log("time", nowIso())
+    console.log("result", r2)
+    console.log("board_after", { w: board.w, h: board.h, chunkSize, colors: board.colors, cooldownMs: board.cooldownMs })
+    console.log("lastSince_after", lastSince)
+    console.groupEnd()
+
+    logLine(`✅ Board reloaded (chunks=${r2.chunksApplied}${r2.metaApplied ? ", meta" : ""}).`)
+    $("fit").click()
+    render()
+    resolveHoverOwner(state.hover)
+
+    await quickGetBoardOnce("post_full_reload_sync")
+  }
+
   canvas.addEventListener("click", async (e) => {
     if (state.isDragging) return
     if (sessionState === "PAUSED") {
       logLine("⏸️ Paused: placing pixels is disabled.")
       return
     }
+    if (placing) {
+      logLine("⏳ Placing... wait")
+      return
+    }
 
     const p = worldPixelFromEvent(e)
     if (!p) return
+
+    placing = true
 
     const user = await getUserForPayload(inDiscord)
     const picked = palette[state.selectedColor]
@@ -1051,14 +1175,17 @@ async function run() {
       console.log("time", nowIso())
       console.log("result", rr)
       console.groupEnd()
-      if (rr?.ok) logLine(`🟦 Placed pixel @ ${p.x},${p.y} color=${state.selectedColor}`)
-      setColorAt(p.x, p.y, state.selectedColor)
+
+      logLine(`✅ Place requested @ ${p.x},${p.y}. Syncing from server...`)
+      await quickGetBoardOnce("after_place_pixel")
     } catch (err) {
       console.groupCollapsed(`[place_pixel_error] ${p.x},${p.y}`)
       console.log("time", nowIso())
       console.error(err)
       console.groupEnd()
       logLine(String(err?.message || err))
+    } finally {
+      placing = false
     }
 
     render()
@@ -1100,120 +1227,6 @@ async function run() {
     render()
   }
 
-  let lastSince = new Date(0).toISOString()
-  let polling = false
-
-  async function applyUpdateChunks(chunks) {
-    console.groupCollapsed(`[apply_update_chunks] n=${chunks?.length ?? 0}`)
-    console.log("time", nowIso())
-    console.log("chunkSize", chunkSize)
-    console.groupEnd()
-
-    for (const c of chunks) {
-      if (c?.dataGzipB64) {
-        const bytes = await gunzipBytes(b64ToBytes(c.dataGzipB64))
-        let sz = chunkSize
-        if (!sz || sz <= 0) {
-          const g = guessSquareSize(bytes.length)
-          if (g) sz = g
-        }
-        if (sz && sz > 0) applyChunk(Number(c.cx || 0), Number(c.cy || 0), bytes, sz)
-      }
-    }
-  }
-
-  async function fullReloadFromServerless() {
-    logLine("⏳ Reloading board from serverless...")
-    console.groupCollapsed("[full_reload_from_serverless] start")
-    console.log("time", nowIso())
-    console.log("lastSince_before", lastSince)
-    console.log("board_before", { w: board.w, h: board.h, chunkSize, colors: board.colors, cooldownMs: board.cooldownMs })
-    console.groupEnd()
-
-    clearBoardLocal()
-    lastSince = new Date(0).toISOString()
-    const r2 = await loadBoardFromServerlessFull()
-
-    console.groupCollapsed("[full_reload_from_serverless] done")
-    console.log("time", nowIso())
-    console.log("result", r2)
-    console.log("board_after", { w: board.w, h: board.h, chunkSize, colors: board.colors, cooldownMs: board.cooldownMs })
-    console.log("lastSince_after", lastSince)
-    console.groupEnd()
-
-    logLine(`✅ Board reloaded (chunks=${r2.chunksApplied}${r2.metaApplied ? ", meta" : ""}).`)
-    $("fit").click()
-    render()
-    resolveHoverOwner(state.hover)
-  }
-
-  async function quickGetBoardOnce() {
-    logLine("⏳ Fetching latest chunks...")
-
-    const started = msNow()
-    const since0 = lastSince
-    console.groupCollapsed("[quick_get_board_once] start")
-    console.log("time", nowIso())
-    console.log("since", since0)
-    console.log("limit", 500)
-    console.log("chunkSize", chunkSize)
-    console.groupEnd()
-
-    let pageToken = null
-    let maxUpdatedAt = lastSince
-    let changed = false
-    let pages = 0
-    let totalChunks = 0
-
-    do {
-      pages++
-      const data = await getBoardBackend(inDiscord, lastSince, 500, pageToken, {})
-      const chunks = Array.isArray(data?.chunks) ? data.chunks : []
-      totalChunks += chunks.length
-
-      console.groupCollapsed(`[quick_get_board_once] page ${pages}`)
-      console.log("time", nowIso())
-      console.log("since_used", lastSince)
-      console.log("returned", data?.returned ?? chunks.length)
-      console.log("chunks_len", chunks.length)
-      console.log("nextPageToken", data?.nextPageToken || null)
-      if (chunks.length) {
-        console.log("first_chunk", chunks[0])
-        console.log("last_chunk", chunks[chunks.length - 1])
-      }
-      console.groupEnd()
-
-      if (chunks.length) {
-        await applyUpdateChunks(chunks)
-        changed = true
-      }
-      for (const c of chunks) {
-        if (c?.updatedAt && String(c.updatedAt) > String(maxUpdatedAt)) maxUpdatedAt = String(c.updatedAt)
-      }
-      pageToken = data?.nextPageToken || null
-    } while (pageToken)
-
-    lastSince = maxUpdatedAt
-
-    const ms = Math.round(msNow() - started)
-    console.groupCollapsed("[quick_get_board_once] done")
-    console.log("time", nowIso())
-    console.log("ms", ms)
-    console.log("pages", pages)
-    console.log("totalChunks", totalChunks)
-    console.log("changed", changed)
-    console.log("lastSince_after", lastSince)
-    console.groupEnd()
-
-    if (changed) {
-      logLine("✅ Updated.")
-      render()
-      resolveHoverOwner(state.hover)
-    } else {
-      logLine("✅ No changes.")
-    }
-  }
-
   $("reload").onclick = async () => {
     const b = $("reload")
     const prev = b ? b.textContent : "Reload board"
@@ -1222,7 +1235,7 @@ async function run() {
       b.textContent = "Reloading..."
     }
     try {
-      await quickGetBoardOnce()
+      await quickGetBoardOnce("reload_button")
     } catch (e) {
       console.groupCollapsed("[reload_button_error]")
       console.log("time", nowIso())
