@@ -157,6 +157,34 @@ function getActivityUser() {
   }
 }
 
+function getAccessTokenForAdmin(inDiscord) {
+  if (!inDiscord) return null
+  const a = getActivityAuth()
+  if (!a?.accessToken) return null
+  return String(a.accessToken)
+}
+
+function getGuildIdForAdmin(inDiscord) {
+  if (!inDiscord) return null
+  const a = getActivityAuth()
+  if (!a?.guildId) return null
+  return String(a.guildId)
+}
+
+function adminAuthHeaders(inDiscord) {
+  const token = getAccessTokenForAdmin(inDiscord)
+  if (!token) return {}
+  return { Authorization: `Bearer ${token}` }
+}
+
+function requireAdminContext(inDiscord) {
+  const token = getAccessTokenForAdmin(inDiscord)
+  const guildId = getGuildIdForAdmin(inDiscord)
+  if (!token) throw new Error("missing_access_token_for_admin_command")
+  if (!guildId) throw new Error("missing_guildId_for_admin_command")
+  return { token, guildId }
+}
+
 function hexToIntColor(colorHex) {
   if (typeof colorHex === "number") return Number(colorHex) >>> 0
   const s = String(colorHex || "").trim()
@@ -271,6 +299,7 @@ async function exchangeCodeForTokenViaApi(code, state) {
   dGroupEnd()
   return accessToken
 }
+
 async function loginDiscordActivity() {
   const loginId = dReqId()
   const started = dMsNow()
@@ -406,6 +435,7 @@ async function pingBackend(inDiscord) {
 async function sessionStartBackend(inDiscord) {
   const reqId = dReqId()
   const userId = await getUserIdForAction(inDiscord)
+  const { guildId } = requireAdminContext(inDiscord)
 
   const payload = {
     type: "SESSION_START",
@@ -413,7 +443,8 @@ async function sessionStartBackend(inDiscord) {
       from: "activity",
       at: dNowIso(),
       reqId,
-      userId: userId || null
+      userId: userId || null,
+      guildId
     }
   }
 
@@ -421,10 +452,10 @@ async function sessionStartBackend(inDiscord) {
     `${GATEWAY_BASE}/proxy`,
     {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...adminAuthHeaders(inDiscord) },
       body: JSON.stringify(payload)
     },
-    { kind: "proxy_session_start", payloadPreview: payload }
+    { kind: "proxy_session_start", payloadPreview: payload, hasAuthHeader: Boolean(getAccessTokenForAdmin(inDiscord)) }
   )
 
   if (!res.ok) throw new Error(`SESSION_START failed: ${meta.status} ${dSafeJson(data)}`)
@@ -434,6 +465,7 @@ async function sessionStartBackend(inDiscord) {
 async function sessionPauseBackend(inDiscord) {
   const reqId = dReqId()
   const userId = await getUserIdForAction(inDiscord)
+  const { guildId } = requireAdminContext(inDiscord)
 
   const payload = {
     type: "SESSION_PAUSE",
@@ -441,7 +473,8 @@ async function sessionPauseBackend(inDiscord) {
       from: "activity",
       at: dNowIso(),
       reqId,
-      userId: userId || null
+      userId: userId || null,
+      guildId
     }
   }
 
@@ -449,10 +482,10 @@ async function sessionPauseBackend(inDiscord) {
     `${GATEWAY_BASE}/proxy`,
     {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...adminAuthHeaders(inDiscord) },
       body: JSON.stringify(payload)
     },
-    { kind: "proxy_session_pause", payloadPreview: payload }
+    { kind: "proxy_session_pause", payloadPreview: payload, hasAuthHeader: Boolean(getAccessTokenForAdmin(inDiscord)) }
   )
 
   if (!res.ok) throw new Error(`SESSION_PAUSE failed: ${meta.status} ${dSafeJson(data)}`)
@@ -462,6 +495,7 @@ async function sessionPauseBackend(inDiscord) {
 async function resetBoardBackend(inDiscord) {
   const reqId = dReqId()
   const userId = await getUserIdForAction(inDiscord)
+  const { guildId } = requireAdminContext(inDiscord)
 
   const payload = {
     type: "RESET_BOARD",
@@ -469,7 +503,8 @@ async function resetBoardBackend(inDiscord) {
       from: "activity",
       at: dNowIso(),
       reqId,
-      userId
+      userId: userId || null,
+      guildId
     }
   }
 
@@ -477,10 +512,10 @@ async function resetBoardBackend(inDiscord) {
     `${GATEWAY_BASE}/proxy`,
     {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...adminAuthHeaders(inDiscord) },
       body: JSON.stringify(payload)
     },
-    { kind: "proxy_reset_board", payloadPreview: payload }
+    { kind: "proxy_reset_board", payloadPreview: payload, hasAuthHeader: Boolean(getAccessTokenForAdmin(inDiscord)) }
   )
 
   if (!res.ok) throw new Error(`RESET_BOARD failed: ${meta.status} ${dSafeJson(data)}`)
@@ -490,6 +525,7 @@ async function resetBoardBackend(inDiscord) {
 async function snapshotBackend(inDiscord, region = null) {
   const reqId = dReqId()
   const userId = await getUserIdForAction(inDiscord)
+  const { guildId } = requireAdminContext(inDiscord)
 
   const payload = {
     type: "SNAPSHOT_CREATE",
@@ -497,8 +533,9 @@ async function snapshotBackend(inDiscord, region = null) {
       from: "activity",
       at: dNowIso(),
       reqId,
-      userId,
-      region: region || null
+      userId: userId || null,
+      region: region || null,
+      guildId
     }
   }
 
@@ -506,10 +543,10 @@ async function snapshotBackend(inDiscord, region = null) {
     `${GATEWAY_BASE}/proxy`,
     {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...adminAuthHeaders(inDiscord) },
       body: JSON.stringify(payload)
     },
-    { kind: "proxy_snapshot_create", payloadPreview: payload }
+    { kind: "proxy_snapshot_create", payloadPreview: payload, hasAuthHeader: Boolean(getAccessTokenForAdmin(inDiscord)) }
   )
 
   if (!res.ok) throw new Error(`SNAPSHOT_CREATE failed: ${meta.status} ${dSafeJson(data)}`)
