@@ -1,7 +1,7 @@
 import "./style.css"
 import { DiscordSDK } from "@discord/embedded-app-sdk"
 
-console.log("MAIN.JS VERSION = BOARD_V3_HOVER_USER", new Date().toISOString())
+console.log("MAIN.JS VERSION = BOARD_V3_HOVER_USER_CORSFIX_V2", new Date().toISOString())
 
 const GATEWAY_BASE = "https://1224715390362324992.discordsays.com/gcp"
 
@@ -34,11 +34,7 @@ function showFatal(err) {
 }
 
 window.addEventListener("error", (e) => showFatal(e.error || e.message))
-window.addEventListener("unhandledrejection", (e) => {
-  const msg = String(e?.reason?.message || e?.reason || "")
-
-  showFatal(e.reason)
-})
+window.addEventListener("unhandledrejection", (e) => showFatal(e.reason))
 
 function isProbablyDiscordActivity() {
   const qp = new URLSearchParams(location.search)
@@ -331,7 +327,10 @@ async function pingBackend(inDiscord) {
     })
   })
 
-  const data = await res.json()
+  const text = await res.text().catch(() => "")
+  let data = null
+  try { data = text ? JSON.parse(text) : null } catch { data = { raw: text } }
+  if (!res.ok) throw new Error(`PING failed: ${res.status} ${JSON.stringify(data)}`)
   return data
 }
 
@@ -436,11 +435,7 @@ async function placePixelBackend(inDiscord, x, y, colorHexOrInt) {
         at: new Date().toISOString(),
         reqId,
         userId: user?.id,
-        username:
-          user?.username ??
-          user?.global_name ??
-          user?.displayName ??
-          null,
+        username: user?.username ?? user?.global_name ?? user?.displayName ?? null,
         x,
         y,
         color
@@ -480,13 +475,11 @@ async function resolveUserHashBackend(userHash) {
 }
 
 async function getBoardBackend(inDiscord, since, limit = 200, pageToken = null, extra = {}) {
-  const reqId = makeReqId()
-  const user = await getUserForPayload(inDiscord)
-
   const url = new URL(`${GATEWAY_BASE}/board`)
   if (since != null) url.searchParams.set("since", String(since))
   if (limit != null) url.searchParams.set("limit", String(limit))
   if (pageToken) url.searchParams.set("pageToken", String(pageToken))
+
   for (const [k, v] of Object.entries(extra || {})) {
     if (v === undefined || v === null) continue
     url.searchParams.set(k, String(v))
@@ -494,19 +487,17 @@ async function getBoardBackend(inDiscord, since, limit = 200, pageToken = null, 
 
   const res = await fetch(url.toString(), {
     method: "GET",
-    headers: {
-      "X-Client-ReqId": reqId,
-      "X-Client-At": new Date().toISOString(),
-      ...(user?.id ? { "X-User-Id": user.id } : {})
-    }
+    mode: "cors",
+    credentials: "omit",
+    cache: "no-store",
+    redirect: "follow"
   })
 
   const text = await res.text().catch(() => "")
   let data = null
   try { data = text ? JSON.parse(text) : null } catch { data = { raw: text } }
-
   if (!res.ok) throw new Error(`GET_BOARD failed: ${res.status} ${JSON.stringify(data)}`)
-  return { ...data, _client: { reqId, at: new Date().toISOString(), user } }
+  return data
 }
 
 function b64ToBytes(b64) {
@@ -611,27 +602,6 @@ async function run() {
 
   const $ = (id) => document.getElementById(id)
   const logLine = (msg) => { $("status").textContent = msg }
-
-  const btn = document.getElementById("ping-btn")
-  const out = document.getElementById("ping-output")
-
-  if (btn && out) {
-    btn.addEventListener("click", async () => {
-      btn.disabled = true
-      btn.textContent = "Ping..."
-      out.textContent = ""
-      try {
-        const data = await pingBackend(inDiscord)
-        out.textContent = JSON.stringify(data, null, 2)
-      } catch (err) {
-        console.error(err)
-        out.textContent = `Erreur: ${err?.message ?? String(err)}`
-      } finally {
-        btn.disabled = false
-        btn.textContent = "Ping Backend"
-      }
-    })
-  }
 
   async function apiWithUser(path, opts = {}) {
     const headers = new Headers(opts.headers || {})
@@ -740,9 +710,9 @@ async function run() {
   }
 
   function screenToWorld(clientX, clientY) {
-    const r = canvas.getBoundingClientRect()
-    const sx = clientX - r.left
-    const sy = clientY - r.top
+    const r2 = canvas.getBoundingClientRect()
+    const sx = clientX - r2.left
+    const sy = clientY - r2.top
     const wx = (sx - view.panX) / view.zoom
     const wy = (sy - view.panY) / view.zoom
     return { x: wx, y: wy }
@@ -771,10 +741,10 @@ async function run() {
 
   function hexToRgba(hex, a) {
     const h = hex.replace("#", "")
-    const r = parseInt(h.slice(0, 2), 16)
-    const g = parseInt(h.slice(2, 4), 16)
-    const b = parseInt(h.slice(4, 6), 16)
-    return `rgba(${r},${g},${b},${a})`
+    const r3 = parseInt(h.slice(0, 2), 16)
+    const g3 = parseInt(h.slice(2, 4), 16)
+    const b3 = parseInt(h.slice(4, 6), 16)
+    return `rgba(${r3},${g3},${b3},${a})`
   }
 
   function idx(x, y) {
@@ -872,9 +842,8 @@ async function run() {
     let metaApplied = false
     let any = 0
 
-    const metaExtra = { includeMeta: "true", includePixelMeta: "true" }
     while (true) {
-      const data = await getBoardBackend(inDiscord, since, limit, pageToken, metaApplied ? { includePixelMeta: "true" } : metaExtra)
+      const data = await getBoardBackend(inDiscord, since, limit, pageToken, { includeMeta: "true" })
       const chunks = Array.isArray(data?.chunks) ? data.chunks : []
 
       for (const c of chunks) {
@@ -901,21 +870,6 @@ async function run() {
           }
           if (sz && sz > 0) applyChunk(Number(c.cx || 0), Number(c.cy || 0), bytes, sz)
           any++
-        }
-
-        if (c?.pixelMetaGzipB64 || c?.metaPixelsGzipB64 || c?.pixelMetaGzip || c?.metaPixelsGzip) {
-          const key =
-            c?.pixelMetaGzipB64 ? "pixelMetaGzipB64" :
-              c?.metaPixelsGzipB64 ? "metaPixelsGzipB64" :
-                c?.pixelMetaGzip ? "pixelMetaGzip" :
-                  "metaPixelsGzip"
-          const metaPixBytes = await gunzipBytes(b64ToBytes(c[key]))
-          let sz = chunkSize
-          if (!sz || sz <= 0) {
-            const g = guessSquareSize(Math.floor(metaPixBytes.length / 8))
-            if (g) sz = g
-          }
-          if (sz && sz > 0) applyChunkMeta(Number(c.cx || 0), Number(c.cy || 0), metaPixBytes, sz)
         }
       }
 
@@ -1116,21 +1070,6 @@ async function run() {
         }
         if (sz && sz > 0) applyChunk(Number(c.cx || 0), Number(c.cy || 0), bytes, sz)
       }
-
-      if (c?.pixelMetaGzipB64 || c?.metaPixelsGzipB64 || c?.pixelMetaGzip || c?.metaPixelsGzip) {
-        const key =
-          c?.pixelMetaGzipB64 ? "pixelMetaGzipB64" :
-            c?.metaPixelsGzipB64 ? "metaPixelsGzipB64" :
-              c?.pixelMetaGzip ? "pixelMetaGzip" :
-                "metaPixelsGzip"
-        const metaPixBytes = await gunzipBytes(b64ToBytes(c[key]))
-        let sz = chunkSize
-        if (!sz || sz <= 0) {
-          const g = guessSquareSize(Math.floor(metaPixBytes.length / 8))
-          if (g) sz = g
-        }
-        if (sz && sz > 0) applyChunkMeta(Number(c.cx || 0), Number(c.cy || 0), metaPixBytes, sz)
-      }
     }
   }
 
@@ -1164,8 +1103,6 @@ async function run() {
   }
 
   $("reset").onclick = async () => {
-
-
     const b = $("reset")
     const prev = b ? b.textContent : "Reset"
     if (b) {
@@ -1193,8 +1130,6 @@ async function run() {
   const snapBtn = $("snapshot")
   if (snapBtn) {
     snapBtn.onclick = async () => {
-
-
       const prev = snapBtn.textContent
       snapBtn.disabled = true
       snapBtn.textContent = "Snapshotting..."
@@ -1224,7 +1159,6 @@ async function run() {
   const resetSessionBtn = $("resetSession")
   if (resetSessionBtn) {
     resetSessionBtn.onclick = async () => {
-
       const prevText = resetSessionBtn.textContent
       resetSessionBtn.disabled = true
       resetSessionBtn.textContent = "Resetting..."
@@ -1272,7 +1206,7 @@ async function run() {
       logLine("⏳ Loading board from serverless...")
       await reloadBoardFromServerless()
     } catch (e) {
-      logLine(String(e?.message || "⚠️ sferverless /board unreachable"))
+      logLine(String(e?.message || "⚠️ serverless /board unreachable"))
       $("fit").click()
       render()
       resolveHoverOwner(state.hover)
@@ -1289,7 +1223,7 @@ async function run() {
         let changed = false
 
         do {
-          const data = await getBoardBackend(inDiscord, lastSince, 200, pageToken, { includePixelMeta: "true" })
+          const data = await getBoardBackend(inDiscord, lastSince, 200, pageToken, {})
           const chunks = Array.isArray(data?.chunks) ? data.chunks : []
           if (chunks.length) {
             await applyUpdateChunks(chunks)
@@ -1309,7 +1243,7 @@ async function run() {
       } catch (e) {
         console.error(e)
       }
-      await new Promise((r) => setTimeout(r, 1000))
+      await new Promise((r3) => setTimeout(r3, 1000))
     }
   }
 
