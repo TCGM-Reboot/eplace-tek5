@@ -1,7 +1,7 @@
 import "./style.css"
 import { DiscordSDK } from "@discord/embedded-app-sdk"
 
-console.log("MAIN.JS VERSION = BOARD_V3_HOVER_USER_CORSFIX_V5_NO_API_ROUTES", new Date().toISOString())
+console.log("MAIN.JS VERSION = BOARD_V3_GUIDE_OAUTH_VIA_API_TOKEN", new Date().toISOString())
 
 const GATEWAY_BASE = "https://1224715390362324992.discordsays.com/gcp"
 
@@ -50,80 +50,34 @@ function avatarUrl(user) {
   return ""
 }
 
-function hexToIntColor(colorHex) {
-  if (typeof colorHex === "number") return Number(colorHex) >>> 0
-  const s = String(colorHex || "").trim()
-  if (!s) return 0
-  if (s.startsWith("#")) return parseInt(s.slice(1), 16) >>> 0
-  if (s.startsWith("0x") || s.startsWith("0X")) return parseInt(s.slice(2), 16) >>> 0
-  return parseInt(s, 10) >>> 0
-}
-
-function makeReqId() {
-  try { return crypto.randomUUID() } catch { return String(Date.now()) + "_" + Math.random().toString(16).slice(2) }
-}
-
-function b64ToBytes(b64) {
-  const bin = atob(String(b64 || ""))
-  const out = new Uint8Array(bin.length)
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i)
-  return out
-}
-
-async function gunzipBytes(bytes) {
-  if (!bytes || !bytes.length) return new Uint8Array(0)
-  if (typeof DecompressionStream === "undefined") throw new Error("gzip_not_supported")
-  const ds = new DecompressionStream("gzip")
-  const stream = new Blob([bytes]).stream().pipeThrough(ds)
-  const ab = await new Response(stream).arrayBuffer()
-  return new Uint8Array(ab)
-}
-
-function guessSquareSize(n) {
-  const s = Math.floor(Math.sqrt(Math.max(0, n)))
-  if (s * s === n) return s
-  return null
-}
-
 function getDiscordClientIdFromDom() {
   const meta = document.querySelector('meta[name="discord-client-id"]')
   const v = meta?.getAttribute("content")
   return v ? String(v).trim() : ""
 }
 
-function getDiscordClientIdFromEnv() {
-  try {
-    const v = import.meta?.env?.VITE_DISCORD_CLIENT_ID
-    return v ? String(v).trim() : ""
-  } catch {
-    return ""
-  }
-}
+function getDiscordClientId() {
+  const DEFAULT_CLIENT_ID = "1224715390362324992"
 
-async function getDiscordClientId() {
   const fromWindow = (window && window.__DISCORD_CLIENT_ID) ? String(window.__DISCORD_CLIENT_ID).trim() : ""
   if (fromWindow) return fromWindow
-  const fromEnv = getDiscordClientIdFromEnv()
+
+  const fromEnv = (import.meta && import.meta.env && import.meta.env.VITE_DISCORD_CLIENT_ID != null)
+    ? String(import.meta.env.VITE_DISCORD_CLIENT_ID).trim()
+    : ""
   if (fromEnv) return fromEnv
+
   const fromMeta = getDiscordClientIdFromDom()
   if (fromMeta) return fromMeta
 
-  try {
-    const r = await fetch(`${GATEWAY_BASE}/auth/config`, { method: "GET", mode: "cors", credentials: "omit", cache: "no-store" })
-    const t = await r.text().catch(() => "")
-    let d = null
-    try { d = t ? JSON.parse(t) : null } catch { d = null }
-    if (r.ok && d?.clientId) return String(d.clientId)
-  } catch { }
-
-  return ""
+  return DEFAULT_CLIENT_ID
 }
 
 function setActivityAuth(auth) {
   try { localStorage.setItem("activity_auth", JSON.stringify(auth || {})) } catch { }
 }
 
-async function getActivityAuth() {
+function getActivityAuth() {
   try {
     const raw = localStorage.getItem("activity_auth")
     if (!raw) return null
@@ -135,7 +89,11 @@ async function getActivityAuth() {
   }
 }
 
-async function getActivityUser() {
+function setActivityUser(u) {
+  try { localStorage.setItem("activity_user", JSON.stringify(u || {})) } catch { }
+}
+
+function getActivityUser() {
   try {
     const raw = localStorage.getItem("activity_user")
     if (!raw) return null
@@ -145,11 +103,22 @@ async function getActivityUser() {
   }
 }
 
-async function oauthExchangeWithWorker(code) {
-  const res = await fetch(`${GATEWAY_BASE}/oauthExchange`, {
+function makeReqId() {
+  try { return crypto.randomUUID() } catch { return String(Date.now()) + "_" + Math.random().toString(16).slice(2) }
+}
+
+function hexToIntColor(colorHex) {
+  if (typeof colorHex === "number") return Number(colorHex) >>> 0
+  const s = String(colorHex || "").trim()
+  if (!s) return 0
+  if (s.startsWith("#")) return parseInt(s.slice(1), 16) >>> 0
+  if (s.startsWith("0x") || s.startsWith("0X")) return parseInt(s.slice(2), 16) >>> 0
+  return parseInt(s, 10) >>> 0
+}
+
+async function exchangeCodeForTokenViaApi(code) {
+  const res = await fetch("/api/token", {
     method: "POST",
-    mode: "cors",
-    credentials: "omit",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ code })
   })
@@ -157,21 +126,21 @@ async function oauthExchangeWithWorker(code) {
   const text = await res.text().catch(() => "")
   let data = null
   try { data = text ? JSON.parse(text) : null } catch { data = { raw: text } }
+
   if (!res.ok || !data?.access_token) {
-    const d = data ? JSON.stringify(data) : ""
-    throw new Error(`token_exchange_failed ${res.status} ${d}`)
+    throw new Error(`token_exchange_failed ${res.status} ${JSON.stringify(data)}`)
   }
-  return data
+  return String(data.access_token)
 }
 
 async function loginDiscordActivity() {
-  const clientId = await getDiscordClientId()
+  const clientId = getDiscordClientId()
   if (!clientId) throw new Error("missing_client_id")
 
   const discordSdk = new DiscordSDK(clientId)
   await discordSdk.ready()
 
-  const authz = await discordSdk.commands.authorize({
+  const { code } = await discordSdk.commands.authorize({
     client_id: clientId,
     response_type: "code",
     state: "",
@@ -179,9 +148,9 @@ async function loginDiscordActivity() {
     scope: ["identify", "guilds", "applications.commands"]
   })
 
-  const tokenData = await oauthExchangeWithWorker(authz.code)
+  const access_token = await exchangeCodeForTokenViaApi(code)
 
-  const auth = await discordSdk.commands.authenticate({ access_token: tokenData.access_token })
+  const auth = await discordSdk.commands.authenticate({ access_token })
   if (!auth?.user) throw new Error("authenticate_failed")
 
   const u = {
@@ -194,15 +163,12 @@ async function loginDiscordActivity() {
   const guildId = discordSdk.guildId ? String(discordSdk.guildId) : ""
   const channelId = discordSdk.channelId ? String(discordSdk.channelId) : ""
 
-  localStorage.setItem("activity_user", JSON.stringify(u))
+  setActivityUser(u)
   setActivityAuth({
-    accessToken: String(tokenData.access_token),
-    tokenType: tokenData.token_type ? String(tokenData.token_type) : "",
-    expiresIn: tokenData.expires_in != null ? Number(tokenData.expires_in) : null,
-    scope: tokenData.scope ? String(tokenData.scope) : "",
+    accessToken: access_token,
     guildId,
     channelId,
-    clientId: String(clientId),
+    clientId,
     at: new Date().toISOString()
   })
 
@@ -211,20 +177,20 @@ async function loginDiscordActivity() {
 
 async function getUserForPayload(inDiscord) {
   if (!inDiscord) return null
-  const u = await getActivityUser()
+  const u = getActivityUser()
   if (!u?.id) return null
   return { id: u.id, username: u.username || "", avatar: u.avatar || "" }
 }
 
 async function getUserIdForAction(inDiscord) {
   if (!inDiscord) return null
-  const u = await getActivityUser()
+  const u = getActivityUser()
   return u?.id ? String(u.id) : null
 }
 
 async function requireAdminAuthForWorker(inDiscord) {
   if (!inDiscord) return { accessToken: null, guildId: null }
-  const a = await getActivityAuth()
+  const a = getActivityAuth()
   if (!a?.accessToken) throw new Error("missing_activity_access_token")
   if (!a?.guildId) throw new Error("missing_guild_id")
   return { accessToken: String(a.accessToken), guildId: String(a.guildId) }
@@ -556,6 +522,28 @@ function setUserSlotState(state) {
   slot.appendChild(wrap)
 }
 
+function b64ToBytes(b64) {
+  const bin = atob(String(b64 || ""))
+  const out = new Uint8Array(bin.length)
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i)
+  return out
+}
+
+async function gunzipBytes(bytes) {
+  if (!bytes || !bytes.length) return new Uint8Array(0)
+  if (typeof DecompressionStream === "undefined") throw new Error("gzip_not_supported")
+  const ds = new DecompressionStream("gzip")
+  const stream = new Blob([bytes]).stream().pipeThrough(ds)
+  const ab = await new Response(stream).arrayBuffer()
+  return new Uint8Array(ab)
+}
+
+function guessSquareSize(n) {
+  const s = Math.floor(Math.sqrt(Math.max(0, n)))
+  if (s * s === n) return s
+  return null
+}
+
 async function run() {
   const app = document.querySelector("#app")
   if (!app) throw new Error("Missing #app root element")
@@ -642,8 +630,8 @@ async function run() {
     setUserSlotState({})
 
     try {
-      const cached = await getActivityUser()
-      const cachedAuth = await getActivityAuth()
+      const cached = getActivityUser()
+      const cachedAuth = getActivityAuth()
       if (cached?.id && cachedAuth?.accessToken) {
         setUserSlotState({ type: "user", user: cached })
         return
@@ -715,6 +703,14 @@ async function run() {
   function setHoverUserText(username, id) {
     $("hoverBy").textContent = username || "-"
     $("hoverId").textContent = id || "-"
+  }
+
+  function hexToRgba(hex, a) {
+    const h = hex.replace("#", "")
+    const r3 = parseInt(h.slice(0, 2), 16)
+    const g3 = parseInt(h.slice(2, 4), 16)
+    const b3 = parseInt(h.slice(4, 6), 16)
+    return `rgba(${r3},${g3},${b3},${a})`
   }
 
   function idx(x, y) {
@@ -822,14 +818,6 @@ async function run() {
     }
 
     return { chunksApplied: any, metaApplied }
-  }
-
-  function hexToRgba(hex, a) {
-    const h = hex.replace("#", "")
-    const r3 = parseInt(h.slice(0, 2), 16)
-    const g3 = parseInt(h.slice(2, 4), 16)
-    const b3 = parseInt(h.slice(4, 6), 16)
-    return `rgba(${r3},${g3},${b3},${a})`
   }
 
   function render() {
@@ -1106,6 +1094,28 @@ async function run() {
     logLine("🧹 Cleared locally.")
     render()
     resolveHoverOwner(state.hover)
+  }
+
+  const resetSessionBtn = $("resetSession")
+  if (resetSessionBtn) {
+    resetSessionBtn.onclick = async () => {
+      const prevText = resetSessionBtn.textContent
+      resetSessionBtn.disabled = true
+      resetSessionBtn.textContent = "Resetting..."
+      try {
+        console.log(JSON.stringify({ t: new Date().toISOString(), event: "resetSession:ui_click", inDiscord }))
+        logLine("⏳ Resetting board (deleting ALL chunks)...")
+        await resetBoardBackend(inDiscord)
+        await reloadBoardFromServerless()
+        logLine("✅ Board reset.")
+      } catch (e) {
+        console.log(JSON.stringify({ t: new Date().toISOString(), event: "resetSession:error", msg: String(e?.message || e), err: String(e?.stack || e) }))
+        logLine(String(e?.message || e))
+      } finally {
+        resetSessionBtn.disabled = false
+        resetSessionBtn.textContent = prevText
+      }
+    }
   }
 
   const startBtn = $("start")
