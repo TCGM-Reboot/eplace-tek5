@@ -220,32 +220,14 @@ function setUserSlotState(state) {
   slot.appendChild(wrap)
 }
 
-function getDiscordClientIdFromDom() {
+function getClientIdFromEnvOrDom() {
+  try {
+    const envId = import.meta?.env?.VITE_DISCORD_CLIENT_ID
+    if (envId) return String(envId).trim()
+  } catch { }
   const meta = document.querySelector('meta[name="discord-client-id"]')
   const v = meta?.getAttribute("content")
   return v ? String(v).trim() : ""
-}
-
-async function getDiscordClientId() {
-  const fromWindow = (window && window.__DISCORD_CLIENT_ID) ? String(window.__DISCORD_CLIENT_ID).trim() : ""
-  if (fromWindow) return fromWindow
-  const fromMeta = getDiscordClientIdFromDom()
-  if (fromMeta) return fromMeta
-
-  try {
-    const cfg = await api("/api/auth/config")
-    if (cfg?.res?.ok && cfg?.data?.clientId) return String(cfg.data.clientId)
-  } catch { }
-
-  try {
-    const r = await fetch(`${GATEWAY_BASE}/auth/config`, { method: "GET", mode: "cors", credentials: "omit", cache: "no-store" })
-    const t = await r.text().catch(() => "")
-    let d = null
-    try { d = t ? JSON.parse(t) : null } catch { d = null }
-    if (r.ok && d?.clientId) return String(d.clientId)
-  } catch { }
-
-  return ""
 }
 
 function setActivityAuth(auth) {
@@ -283,24 +265,32 @@ async function oauthExchangeWithWorker(code) {
   return data
 }
 
+let discordSdk = null
+
+async function ensureDiscordSdk(clientId) {
+  if (discordSdk) return discordSdk
+  discordSdk = new DiscordSDK(clientId)
+  await discordSdk.ready()
+  return discordSdk
+}
+
 async function loginDiscordActivity() {
-  const clientId = await getDiscordClientId()
+  const clientId = getClientIdFromEnvOrDom()
   if (!clientId) throw new Error("missing_client_id")
 
-  const discordSdk = new DiscordSDK(clientId)
-  await discordSdk.ready()
+  const sdk = await ensureDiscordSdk(clientId)
 
-  const authz = await discordSdk.commands.authorize({
+  const { code } = await sdk.commands.authorize({
     client_id: clientId,
     response_type: "code",
     state: "",
-    prompt: "consent",
-    scope: ["identify"]
+    prompt: "none",
+    scope: ["identify", "guilds", "applications.commands"]
   })
 
-  const tokenData = await oauthExchangeWithWorker(authz.code)
+  const tokenData = await oauthExchangeWithWorker(code)
 
-  const auth = await discordSdk.commands.authenticate({ access_token: tokenData.access_token })
+  const auth = await sdk.commands.authenticate({ access_token: tokenData.access_token })
   if (!auth?.user) throw new Error("authenticate_failed")
 
   const u = {
@@ -310,8 +300,8 @@ async function loginDiscordActivity() {
     avatar_url: auth.user.avatar ? `https://cdn.discordapp.com/avatars/${auth.user.id}/${auth.user.avatar}.png?size=128` : ""
   }
 
-  const guildId = discordSdk.guildId ? String(discordSdk.guildId) : ""
-  const channelId = discordSdk.channelId ? String(discordSdk.channelId) : ""
+  const guildId = sdk.guildId ? String(sdk.guildId) : ""
+  const channelId = sdk.channelId ? String(sdk.channelId) : ""
 
   localStorage.setItem("activity_user", JSON.stringify(u))
   setActivityAuth({
@@ -1347,8 +1337,7 @@ async function run() {
     })()
 
   async function pollBoard() {
-    if (polling) return
-    polling = true
+    let polling = true
     while (polling) {
       try {
         let pageToken = null
